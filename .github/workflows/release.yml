@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        
+      - name: Build all targets
+        run: |
+          bazel build //...
+          
+      - name: Run all tests
+        run: |
+          bazel test //...
+          
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          release_name: Release ${{ github.event.inputs.version }}
+          body: |
+            ## Changes in this Release
+            
+            ### Features
+            - Proto Lake Gazelle extension for automatic bundle BUILD file generation
+            - Multi-language support (Java, Python, JavaScript/TypeScript)
+            - Configuration inheritance from lake.yaml
+            - gRPC support with automatic service detection
+            
+            ### Installation
+            
+            Add to your `MODULE.bazel`:
+            ```starlark
+            bazel_dep(name = "protolake_gazelle", version = "0.0.1")
+            
+            git_override(
+                module_name = "protolake_gazelle",
+                remote = "https://github.com/cohub-space/protolake-gazelle.git",
+                commit = "${{ github.sha }}",
+            )
+            ```
+            
+            See README.md for detailed usage instructions.
+          draft: true
+          prerelease: false

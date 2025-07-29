@@ -1,0 +1,44 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    name: Integration Test with Proto Lake
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Mount bazel cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: ${{ runner.os }}-bazel-integration-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-integration-
+            ${{ runner.os }}-bazel-
+            
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        
+      - name: Run integration test script
+        run: |
+          chmod +x test_protolake_gazelle.sh
+          ./test_protolake_gazelle.sh
+          
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outputs
+          path: |
+            test-workspace/
+            bazel-out/
+          retention-days: 5

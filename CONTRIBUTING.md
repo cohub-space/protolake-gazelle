@@ -18,6 +18,7 @@ Thank you for your interest in contributing to protolake-gazelle!
 5. **Run tests**:
    ```bash
    bazel test //...
+   ./test_protolake_gazelle.sh  # For integration tests
    ```
 6. **Commit your changes** with a descriptive message:
    ```bash
@@ -32,11 +33,22 @@ Thank you for your interest in contributing to protolake-gazelle!
 ## Pull Request Guidelines
 
 - PRs must be reviewed before merging
-- All tests must pass
+- All tests must pass (including CI/CD checks)
 - Update documentation as needed
 - Follow Go coding standards and conventions
 - Keep commits focused and atomic
 - Write clear commit messages following conventional commits format
+- Use the provided pull request template
+
+## CI/CD Pipeline
+
+Our GitHub Actions workflows automatically run on every pull request:
+
+- **Build and Test**: Builds all targets and runs unit tests
+- **Integration Tests**: Runs comprehensive integration tests with Proto Lake scenarios
+- **Dependency Updates**: Dependabot automatically creates PRs for dependency updates
+
+All checks must pass before a PR can be merged.
 
 ## Commit Message Format
 
@@ -60,9 +72,14 @@ Types:
 
 ## Testing
 
-Run all tests:
+Run all unit tests:
 ```bash
 bazel test //...
+```
+
+Run integration tests:
+```bash
+./test_protolake_gazelle.sh
 ```
 
 Run specific tests:
@@ -71,22 +88,58 @@ bazel test //language:go_default_test
 bazel test //:integration_test
 ```
 
+Test with a specific Bazel version:
+```bash
+USE_BAZEL_VERSION=8.3.0 bazel test //...
+```
+
 ## Code Style
 
 - Follow standard Go formatting (use `gofmt`)
 - Use meaningful variable and function names
 - Add comments for exported functions and types
 - Keep functions small and focused
+- Run `go mod tidy` before committing Go module changes
+
+## Local Development Tips
+
+1. **Testing changes locally with Proto Lake**:
+   ```bash
+   # In your Proto Lake workspace
+   local_path_override(
+       module_name = "protolake_gazelle",
+       path = "/path/to/your/protolake-gazelle",
+   )
+   ```
+
+2. **Debugging Gazelle extension**:
+   ```bash
+   # Run with debug output
+   bazel run //:gazelle -- -mode=diff -v
+   ```
+
+3. **Testing with different configurations**:
+   - Create test cases in `testdata/` directory
+   - Each test case should have its own subdirectory with `bundle.yaml`
 
 ## Reporting Issues
 
 When reporting issues, please include:
-- Bazel version
+- Bazel version (`bazel version`)
 - Operating system
-- Go version
+- Go version (`go version`)
 - Steps to reproduce the issue
 - Expected behavior
 - Actual behavior
+- Relevant `bundle.yaml` and proto file structure
+
+## Release Process
+
+Releases are created through the manual Release workflow:
+1. Maintainers trigger the workflow with a version tag
+2. CI runs all tests
+3. A draft release is created with auto-generated notes
+4. Maintainers review and publish the release
 
 ## Code of Conduct
 
@@ -94,4 +147,7 @@ Please be respectful and constructive in all interactions. We are committed to p
 
 ## Questions?
 
-If you have questions, feel free to open an issue with the "question" label.
+If you have questions, feel free to:
+- Open an issue with the "question" label
+- Start a discussion in the GitHub Discussions tab (if enabled)
+- Reach out to the maintainers listed in CODEOWNERS (@khichou)
