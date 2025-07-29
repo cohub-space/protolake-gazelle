@@ -1,0 +1,49 @@
+# Tools for protolake bundle generation and publishing
+
+# Proto bundle rules
+exports_files([
+    "proto_bundle.bzl",
+], visibility = ["//visibility:public"])
+
+# Stub publishers for testing
+genrule(
+    name = "maven_publisher",
+    outs = ["maven_publisher.sh"],
+    cmd = """cat > $@ << 'EOF'
+#!/bin/bash
+echo "Maven publisher called with: $$@"
+echo "Would publish to: $$(echo "$$@" | grep -o -- '--repo [^[:space:]]*' | cut -d' ' -f2 || echo 'default-repo')"
+echo "Published successfully"
+EOF
+chmod +x $@""",
+    executable = True,
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "pypi_publisher",
+    outs = ["pypi_publisher.sh"],
+    cmd = """cat > $@ << 'EOF'
+#!/bin/bash
+echo "PyPI publisher called with: $$@"
+echo "Would publish to: $$(echo "$$@" | grep -o -- '--repo [^[:space:]]*' | cut -d' ' -f2 || echo 'default-repo')"
+echo "Published successfully"
+EOF
+chmod +x $@""",
+    executable = True,
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "npm_publisher",
+    outs = ["npm_publisher.sh"],
+    cmd = """cat > $@ << 'EOF'
+#!/bin/bash
+echo "NPM publisher called with: $$@"
+echo "Would publish to: $$(echo "$$@" | grep -o -- '--registry [^[:space:]]*' | cut -d' ' -f2 || echo 'default-registry')"
+echo "Published successfully"
+EOF
+chmod +x $@""",
+    executable = True,
+    visibility = ["//visibility:public"],
+)

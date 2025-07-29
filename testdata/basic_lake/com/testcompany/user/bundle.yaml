@@ -1,0 +1,18 @@
+bundle:
+  name: "user-service"
+  owner: "platform-team"
+  proto_package: "com.testcompany.user"
+  description: "User service proto definitions"
+  version: "1.0.0"
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: "com.testcompany.proto"
+      artifact_id: "user-service-proto"
+    python:
+      enabled: true
+      package_name: "testcompany_user_proto"
+    javascript:
+      enabled: true
+      package_name: "@testcompany/user-service-proto"

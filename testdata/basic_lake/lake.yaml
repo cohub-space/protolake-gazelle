@@ -1,0 +1,18 @@
+config:
+  language_defaults:
+    java:
+      enabled: true
+      group_id: "com.testcompany.proto"
+      source_version: "11"
+      target_version: "8"
+    python:
+      enabled: true
+      package_name: "testcompany_proto"
+      python_version: ">=3.8"
+    javascript:
+      enabled: true
+      package_name: "@testcompany/proto"
+  build_defaults:
+    base_version: "1.0.0"
+  validation:
+    buf_config_path: "./buf.yaml"

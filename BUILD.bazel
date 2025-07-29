@@ -1,0 +1,42 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
+
+# Export the language implementation
+alias(
+    name = "protolake-gazelle",
+    actual = "//language:go_default_library",
+    visibility = ["//visibility:public"],
+)
+
+# This allows the proto lake to use our language
+gazelle_binary(
+    name = "gazelle_with_protolake",
+    languages = [
+        "@bazel_gazelle//language/proto",
+        "//language:go_default_library",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Integration test that actually runs Gazelle
+go_test(
+    name = "integration_test",
+    srcs = ["integration/integration_test.go"],
+    data = [
+        ":gazelle_with_protolake",
+        "//tools:proto_bundle.bzl",
+        "//tools:maven_publisher",
+        "//tools:pypi_publisher", 
+        "//tools:npm_publisher",
+    ] + glob(["testdata/**"]),
+    deps = [
+        "//language:go_default_library",
+        "@in_gopkg_yaml_v3//:go_default_library",
+    ],
+    size = "medium",
+    timeout = "moderate",
+)
+
+# Gazelle configuration for this repository
+# gazelle:prefix github.com/vdp/protolake-gazelle
+gazelle(name = "gazelle")
