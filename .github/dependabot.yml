@@ -1,0 +1,34 @@
+version: 2
+updates:
+  # Enable version updates for Go modules
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "khichou"
+    labels:
+      - "dependencies"
+      - "go"
+    
+  # Enable version updates for Bazel dependencies
+  - package-ecosystem: "bazel"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "khichou"
+    labels:
+      - "dependencies"
+      - "bazel"
+      
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    assignees:
+      - "khichou"
+    labels:
+      - "dependencies"
+      - "github-actions"

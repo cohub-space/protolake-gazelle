@@ -1,0 +1,19 @@
+{
+  "name": "development-branches",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/dev/*", "refs/heads/feature/*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "required_signatures"
+    }
+  ]
+}

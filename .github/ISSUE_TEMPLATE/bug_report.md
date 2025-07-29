@@ -2,40 +2,50 @@
 name: Bug report
 about: Create a report to help us improve
 title: '[BUG] '
-labels: bug
+labels: 'bug'
 assignees: ''
+
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## Bug Description
+<!-- A clear and concise description of what the bug is -->
 
-**To Reproduce**
+## To Reproduce
 Steps to reproduce the behavior:
-1. Create a bundle.yaml with '...'
+1. Create a bundle.yaml with configuration '...'
 2. Run command '...'
 3. See error
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Expected Behavior
+<!-- A clear and concise description of what you expected to happen -->
 
-**Actual behavior**
-What actually happened instead.
+## Actual Behavior
+<!-- What actually happened -->
 
-**Error messages**
+## Environment
+- **Bazel version**: (run `bazel version`)
+- **Go version**: (run `go version`)
+- **OS**: [e.g., Ubuntu 22.04, macOS 14.0]
+- **protolake-gazelle commit**: 
+
+## Proto Structure
+<!-- Show your proto file structure and bundle.yaml configuration -->
 ```
-Paste any error messages here
+project/
+├── bundle.yaml
+└── protos/
+    └── ...
 ```
 
-**Environment:**
-- OS: [e.g. macOS, Linux, Windows]
-- Bazel version: [e.g. 7.0.0]
-- Go version: [e.g. 1.23]
-- protolake-gazelle commit: [e.g. abc123]
-
-**bundle.yaml content (if applicable)**
+## bundle.yaml Configuration
 ```yaml
-# Paste your bundle.yaml content here
+# Paste your bundle.yaml here
 ```
 
-**Additional context**
-Add any other context about the problem here.
+## Error Output
+```
+# Paste the full error output here
+```
+
+## Additional Context
+<!-- Add any other context about the problem here -->

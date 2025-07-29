@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/cohub-space/protolake-gazelle/discussions
+    about: Ask questions and discuss with the community
+  - name: Proto Lake Main Repository
+    url: https://github.com/cohub-space/protolake
+    about: For issues related to Proto Lake itself, not the Gazelle extension
