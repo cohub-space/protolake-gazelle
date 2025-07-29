@@ -1,132 +1,200 @@
-# Proto Lake Gazelle Extension
+# protolake-gazelle
 
-A custom Gazelle language extension that automatically generates service bundle BUILD rules for Proto Lake services.
+A Gazelle extension for Proto Lake that automatically generates Bazel BUILD files for protocol buffer service bundles.
 
 ## Overview
 
-This extension detects `bundle.yaml` files in your Proto Lake and automatically generates the appropriate BUILD rules for creating multi-language proto bundles (Java, Python, JavaScript).
+protolake-gazelle extends [Bazel Gazelle](https://github.com/bazelbuild/bazel-gazelle) to understand Proto Lake's bundle structure and automatically generate BUILD files with multi-language support (Java, Python, JavaScript/TypeScript).
 
 ## Features
 
-- **Automatic Service Detection**: Finds `bundle.yaml` files to identify service boundaries
-- **Bundle Generation**: Creates aggregated proto_library rules and language-specific bundles
-- **Multi-Language Support**: Generates Java, Python, and JavaScript proto packages
-- **Publishing Targets**: Creates convenient aliases for publishing to Maven, PyPI, and NPM
+- **Automatic Bundle Detection**: Finds directories containing `bundle.yaml` files
+- **Multi-Language Support**: Generates rules for Java, Python, and JavaScript/TypeScript
+- **Configuration Inheritance**: Bundle settings inherit from lake-wide defaults
+- **gRPC Support**: Automatically generates gRPC libraries when services are detected
+- **Hybrid Publishing**: Supports both static configuration and runtime parameters
 
-## How It Works
+## Installation
 
-1. When Gazelle runs, this extension looks for `bundle.yaml` files
-2. For each service found, it:
-    - Collects all proto_library targets under that service directory
-    - Creates an aggregated `<service>_all_protos` target
-    - Generates language-specific proto libraries and bundles
-    - Adds publishing aliases for convenience
+### Using as a Bazel Module
 
-## Generated Rules
-
-For a service with name `service_a`, the extension generates:
+In your `MODULE.bazel`:
 
 ```starlark
-# Aggregate all protos
-proto_library(
-    name = "service_a_all_protos",
-    deps = [
-        # All proto targets under this service
-    ],
-    visibility = ["//visibility:public"],
-)
+bazel_dep(name = "protolake_gazelle", version = "0.0.1")
 
-# Java support
-java_proto_library(
-    name = "service_a_java_proto",
-    deps = [":service_a_all_protos"],
-)
-
-java_proto_bundle(
-    name = "service_a_java_bundle",
-    proto_deps = [":service_a_all_protos"],
-    java_deps = [":service_a_java_proto"],
-    group_id = "com.company.platform",
-    artifact_id = "service-a-proto",
-    version = "1.0.0",
-)
-
-# Python support
-py_proto_library(
-    name = "service_a_py_proto",
-    deps = [":service_a_all_protos"],
-)
-
-py_proto_bundle(
-    name = "service_a_py_bundle",
-    proto_deps = [":service_a_all_protos"],
-    py_deps = [":service_a_py_proto"],
-    package_name = "company-service-a-proto",
-    version = "1.0.0",
-)
-
-# Publishing aliases
-alias(
-    name = "publish_to_maven",
-    actual = ":service_a_java_bundle",
-)
-
-alias(
-    name = "publish_to_pypi", 
-    actual = ":service_a_py_bundle",
+git_override(
+    module_name = "protolake_gazelle",
+    remote = "https://github.com/cohub-space/protolake-gazelle.git",
+    commit = "COMMIT_SHA", # Use a specific commit
 )
 ```
+
+### Using with Proto Lake
+
+Proto Lake automatically includes this extension when creating new lakes. No manual installation needed!
 
 ## Usage
 
-1. The extension is automatically included when you run:
-   ```bash
-   bazel run //:gazelle
-   ```
+### Basic Usage
 
-2. Or with the wrapper that also fixes imports:
-   ```bash
-   bazel run //tools:gazelle_wrapper
-   ```
+Create a `bundle.yaml` in your proto directory:
+
+```yaml
+bundle:
+  name: "user-service"
+  owner: "platform-team"
+  proto_package: "com.example.user"
+  description: "User service proto definitions"
+  version: "1.0.0"
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: "com.example.proto"
+      artifact_id: "user-service-proto"
+    python:
+      enabled: true
+      package_name: "example_user_proto"
+    javascript:
+      enabled: true
+      package_name: "@example/user-service-proto"
+```
+
+Run Gazelle:
+
+```bash
+bazel run //:gazelle
+```
+
+### Generated BUILD File
+
+The extension will generate a BUILD file with:
+
+```starlark
+# Auto-generated proto aggregation
+proto_library(
+    name = "user_service_all_protos",
+    srcs = glob(["**/*.proto"]),
+    visibility = ["//visibility:public"],
+)
+
+# Java bundle
+java_proto_library(
+    name = "user_service_java_proto",
+    deps = [":user_service_all_protos"],
+)
+
+java_proto_bundle(
+    name = "user_service_java_bundle",
+    proto_deps = [":user_service_all_protos"],
+    java_deps = [":user_service_java_proto"],
+    group_id = "com.example.proto",
+    artifact_id = "user-service-proto",
+)
+
+# Python bundle  
+py_proto_library(
+    name = "user_service_py_proto",
+    deps = [":user_service_all_protos"],
+)
+
+py_proto_bundle(
+    name = "user_service_py_bundle",
+    proto_deps = [":user_service_all_protos"],
+    py_deps = [":user_service_py_proto"],
+    package_name = "example_user_proto",
+)
+
+# JavaScript bundle
+js_proto_library(
+    name = "user_service_js_proto",
+    deps = [":user_service_all_protos"],
+)
+
+js_proto_bundle(
+    name = "user_service_js_bundle",
+    proto_deps = [":user_service_all_protos"],
+    js_deps = [":user_service_js_proto"],
+    package_name = "@example/user-service-proto",
+)
+```
 
 ## Configuration
 
-You can control the extension using Gazelle directives:
+### Lake-Level Configuration
 
-```starlark
-# Enable/disable protolake extension (enabled by default)
-# gazelle:protolake enabled
-```
-
-## Service Configuration
-
-The `bundle.yaml` file should have this structure:
+Create a `lake.yaml` at the root of your Proto Lake:
 
 ```yaml
-service:
-  name: service_a
-  owner: team-platform
-  language_targets:
+config:
+  language_defaults:
     java:
-      group_id: com.company.platform
-      artifact_id: service-a-proto
+      enabled: true
+      group_id: "com.company.proto"
+      source_version: "11"
+      target_version: "8"
     python:
-      package_name: company-service-a-proto
+      enabled: true
+      package_name: "company_proto"
+      python_version: ">=3.8"
     javascript:
-      package_name: "@company/service-a-proto"
+      enabled: true
+      package_name: "@company/proto"
+```
+
+### Bundle-Level Configuration
+
+Bundle configuration in `bundle.yaml` overrides lake defaults:
+
+```yaml
+bundle:
+  name: "special-service"
+  owner: "special-team"
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: "com.special.proto" # Overrides lake default
+      artifact_id: "special-proto"
+```
+
+## Directives
+
+Control the extension behavior with Gazelle directives:
+
+```starlark
+# Disable protolake extension for this directory
+# gazelle:protolake false
 ```
 
 ## Development
 
-To modify this extension:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
-1. Make changes to the Go source files
-2. Test with: `bazel test //...`
-3. Build with: `bazel build //...`
+### Building
 
-## Future Enhancements
+```bash
+bazel build //...
+```
 
-- Version management from bundle.yaml
-- Better proto target discovery (walk subdirectories)
-- JavaScript/TypeScript proto generation support
-- Custom Gazelle directives for fine-grained control
+### Testing
+
+```bash
+bazel test //...
+```
+
+## License
+
+Apache License 2.0 - See [LICENSE](LICENSE) file for details.
+
+## Support
+
+For issues and questions:
+- Open an issue on [GitHub](https://github.com/cohub-space/protolake-gazelle/issues)
+- Check existing issues for solutions
+
+## Related Projects
+
+- [Proto Lake](https://github.com/Cohub-Space/Protolake) - The main Proto Lake service
+- [Bazel Gazelle](https://github.com/bazelbuild/bazel-gazelle) - The extensible BUILD file generator

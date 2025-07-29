@@ -1,4 +1,4 @@
-module github.com/vdp/protolake-gazelle
+module github.com/cohub-space/protolake-gazelle
 
 go 1.23
 

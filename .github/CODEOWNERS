@@ -1,0 +1,25 @@
+# CODEOWNERS for protolake-gazelle
+# This file defines who owns what code in the repository
+
+# Default code owners for the entire repo
+* @khichou
+
+# Core language implementation
+/language/ @khichou
+
+# Build configuration
+/BUILD.bazel @khichou
+/MODULE.bazel @khichou
+/.bazelrc @khichou
+
+# Go module files
+/go.mod @khichou
+/go.sum @khichou
+
+# Documentation
+/README.md @khichou
+/CONTRIBUTING.md @khichou
+/LICENSE @khichou
+
+# GitHub configuration
+/.github/ @khichou

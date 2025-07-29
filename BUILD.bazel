@@ -38,5 +38,5 @@ go_test(
 )
 
 # Gazelle configuration for this repository
-# gazelle:prefix github.com/vdp/protolake-gazelle
+# gazelle:prefix github.com/cohub-space/protolake-gazelle
 gazelle(name = "gazelle")

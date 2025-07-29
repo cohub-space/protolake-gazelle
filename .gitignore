@@ -1,0 +1,33 @@
+# Bazel
+/bazel-*
+.bazelrc.user
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/test-workspace/
+*.log
+
+# Build artifacts
+/dist/
+/build/
