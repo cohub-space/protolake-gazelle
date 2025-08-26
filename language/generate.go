@@ -110,16 +110,16 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	publishMavenRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_java_bundle", bundleName)}})
 	publishMavenRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_maven.log"}})
 	// Command with environment variable expansion - this is the hybrid approach
-	publishCmd := fmt.Sprintf("$(location //tools:maven_publisher) "+
-		"--jar $(location :%s_java_bundle) "+
+	publishCmd := fmt.Sprintf("$(location //tools:publish_to_maven) "+
+		"$(location :%s_java_bundle) "+
 		"--group-id %s "+
 		"--artifact-id %s "+
-		"--version \"${VERSION:-1.0.0}\" "+
-		"--repo \"${MAVEN_REPO:-file://~/.m2/repository}\" "+
+		"--version \"$${VERSION:-1.0.0}\" "+
+		"--repo \"$${MAVEN_REPO:-file://~/.m2/repository}\" "+
 		"> $@",
 		bundleName, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
 	publishMavenRule.SetAttr("cmd", publishCmd)
-	publishMavenRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:maven_publisher"}})
+	publishMavenRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_maven"}})
 	rules = append(rules, publishMavenRule)
 
 	// Convenience alias for publishing
@@ -145,7 +145,8 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 	// The unified rule handles environment variables internally
 	pyBundleRule := rule.NewRule("py_proto_bundle", fmt.Sprintf("%s_py_bundle", bundleName))
 	pyBundleRule.SetAttr("proto_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_all_protos", bundleName)}})
-	pyBundleRule.SetAttr("py_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_python_grpc", bundleName)}})
+	// Only set py_grpc_deps since python_grpc_library generates both proto and gRPC files
+	pyBundleRule.SetAttr("py_deps", rule.PlatformStrings{Generic: []string{}})
 	pyBundleRule.SetAttr("py_grpc_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_python_grpc", bundleName)}})
 	// Static package name from configuration
 	pyBundleRule.SetAttr("package_name", config.PythonConfig.PackageName)
@@ -158,15 +159,15 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 	publishPypiRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_py_bundle", bundleName)}})
 	publishPypiRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_pypi.log"}})
 	// Command with environment variable expansion
-	publishCmd := fmt.Sprintf("$(location //tools:pypi_publisher) "+
-		"--wheel $(location :%s_py_bundle) "+
+	publishCmd := fmt.Sprintf("$(location //tools:publish_to_pypi) "+
+		"$(location :%s_py_bundle) "+
 		"--package-name %s "+
-		"--version \"${VERSION:-1.0.0}\" "+
-		"--repo \"${PYPI_REPO:-file://~/.pypi}\" "+
+		"--version \"$${VERSION:-1.0.0}\" "+
+		"--repo \"$${PYPI_REPO:-file://~/.pypi}\" "+
 		"> $@",
 		bundleName, config.PythonConfig.PackageName)
 	publishPypiRule.SetAttr("cmd", publishCmd)
-	publishPypiRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pypi_publisher"}})
+	publishPypiRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_pypi"}})
 	rules = append(rules, publishPypiRule)
 
 	// Convenience alias for publishing
@@ -211,15 +212,15 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	publishNpmRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_js_bundle", bundleName)}})
 	publishNpmRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_npm.log"}})
 	// Command with environment variable expansion
-	publishCmd := fmt.Sprintf("$(location //tools:npm_publisher) "+
-		"--package $(location :%s_js_bundle) "+
-		"--package-name %s "+
-		"--version \"${VERSION:-1.0.0}\" "+
-		"--registry \"${NPM_REGISTRY:-file://~/.npm}\" "+
+	// NPM publisher expects bundle path and coordinates file as positional args
+	// Create coordinates file inline since we can't access output groups in genrule
+	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > coords.txt && "+
+		"NPM_PUBLISH_MODE=file $(location //tools:publish_to_npm) "+
+		"$(location :%s_js_bundle) coords.txt "+
 		"> $@",
-		bundleName, config.JavaScriptConfig.PackageName)
+		config.JavaScriptConfig.PackageName, bundleName)
 	publishNpmRule.SetAttr("cmd", publishCmd)
-	publishNpmRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:npm_publisher"}})
+	publishNpmRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_npm"}})
 	rules = append(rules, publishNpmRule)
 
 	// Convenience alias for publishing
