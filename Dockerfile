@@ -1,4 +1,4 @@
-# Dockerfile for building and testing protolake-gazelle with Bazel 8.3
+# Dockerfile for building and testing protolake-gazelle with Bazel 9
 FROM ubuntu:24.04
 
 # Install dependencies
@@ -9,12 +9,12 @@ RUN apt-get update && apt-get install -y \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Bazel 8.3.0
-RUN curl -fLo /usr/local/bin/bazel https://github.com/bazelbuild/bazel/releases/download/8.3.0/bazel-8.3.0-linux-x86_64 \
+# Install Bazel 9.0.0
+RUN curl -fLo /usr/local/bin/bazel https://github.com/bazelbuild/bazel/releases/download/9.0.0/bazel-9.0.0-linux-x86_64 \
     && chmod +x /usr/local/bin/bazel
 
-# Install Go 1.23
-RUN curl -fLo /tmp/go.tar.gz https://go.dev/dl/go1.23.3.linux-amd64.tar.gz \
+# Install Go 1.25
+RUN curl -fLo /tmp/go.tar.gz https://go.dev/dl/go1.25.7.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 

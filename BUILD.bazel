@@ -28,10 +28,9 @@ go_test(
         "//tools:maven_publisher",
         "//tools:pypi_publisher", 
         "//tools:npm_publisher",
-    ] + glob(["testdata/**"]),
+    ],
     deps = [
         "//language:go_default_library",
-        "@in_gopkg_yaml_v3//:go_default_library",
     ],
     size = "medium",
     timeout = "moderate",

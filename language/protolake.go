@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/bazelbuild/bazel-gazelle/config"
 	"github.com/bazelbuild/bazel-gazelle/label"
@@ -15,7 +16,16 @@ import (
 	"github.com/bazelbuild/bazel-gazelle/rule"
 )
 
-const protolakeName = "protolake"
+const (
+	protolakeName  = "protolake"
+	buildBazelFile = "BUILD.bazel"
+	buildFile      = "BUILD"
+	bundleYamlFile = "bundle.yaml"
+	lakeYamlFile   = "lake.yaml"
+	bazelDirPrefix = "bazel-"
+)
+
+var protoLibraryPattern = regexp.MustCompile(`proto_library\s*\(\s*[^)]*name\s*=\s*"([^"]+)"[^)]*\)`)
 
 // protolakeExtension implements the Gazelle language.Language interface
 // for generating protolake bundle rules with hybrid publishing support
@@ -86,15 +96,8 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 	log.Printf("[protolake-gazelle] GenerateRules called for dir: %s, rel: %s", args.Dir, args.Rel)
 
 	// Check if this directory has a bundle.yaml file
-	bundleYamlPath := filepath.Join(args.Dir, "bundle.yaml")
+	bundleYamlPath := filepath.Join(args.Dir, bundleYamlFile)
 	if _, err := os.Stat(bundleYamlPath); os.IsNotExist(err) {
-		// Debug: List files in directory to understand what's there
-		if files, err := os.ReadDir(args.Dir); err == nil {
-			log.Printf("[protolake-gazelle] Files in %s:", args.Dir)
-			for _, f := range files {
-				log.Printf("  - %s", f.Name())
-			}
-		}
 		return language.GenerateResult{}
 	}
 
@@ -177,28 +180,26 @@ func (pe *protolakeExtension) discoverProtoTargetsInDirectory(dir string, repoRo
 	var targets []string
 
 	// Look for existing BUILD file
-	buildFile := filepath.Join(dir, "BUILD.bazel")
-	if _, err := os.Stat(buildFile); os.IsNotExist(err) {
-		buildFile = filepath.Join(dir, "BUILD")
+	bf := filepath.Join(dir, buildBazelFile)
+	if _, err := os.Stat(bf); os.IsNotExist(err) {
+		bf = filepath.Join(dir, buildFile)
 	}
 
-	if _, err := os.Stat(buildFile); os.IsNotExist(err) {
+	if _, err := os.Stat(bf); os.IsNotExist(err) {
 		log.Printf("No BUILD file found in %s", dir)
 		return targets
 	}
 
 	// Read BUILD file and parse proto_library rules
-	content, err := os.ReadFile(buildFile)
+	content, err := os.ReadFile(bf)
 	if err != nil {
-		log.Printf("Failed to read BUILD file %s: %v", buildFile, err)
+		log.Printf("Failed to read BUILD file %s: %v", bf, err)
 		return targets
 	}
 
 	buildContent := string(content)
-	log.Printf("Parsing BUILD file content for proto_library rules in %s", dir)
 
 	// Use regex to find proto_library rules with proper multi-line support
-	protoLibraryPattern := regexp.MustCompile(`proto_library\s*\(\s*[^)]*name\s*=\s*"([^"]+)"[^)]*\)`)
 	matches := protoLibraryPattern.FindAllStringSubmatch(buildContent, -1)
 
 	for _, match := range matches {
@@ -239,13 +240,12 @@ func (pe *protolakeExtension) discoverProtoTargetsRecursively(bundleDir string, 
 		}
 
 		// Skip bazel output directories
-		if info.IsDir() && (info.Name() == "bazel-bin" || info.Name() == "bazel-out" ||
-			info.Name() == "bazel-testlogs" || info.Name() == "bazel-"+filepath.Base(bundleDir)) {
+		if info.IsDir() && strings.HasPrefix(info.Name(), bazelDirPrefix) {
 			return filepath.SkipDir
 		}
 
 		// Process BUILD files
-		if info.Name() == "BUILD.bazel" || info.Name() == "BUILD" {
+		if info.Name() == buildBazelFile || info.Name() == buildFile {
 			dir := filepath.Dir(path)
 			dirTargets := pe.discoverProtoTargetsInDirectory(dir, repoRoot)
 			targets = append(targets, dirTargets...)
@@ -290,6 +290,17 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"js_grpc_web_deps": true,
 			},
 		},
+		"proto_descriptor_set": {
+			NonEmptyAttrs: map[string]bool{
+				"deps": true,
+			},
+		},
+		"js_proto_loader_bundle": {
+			NonEmptyAttrs: map[string]bool{
+				"package_name": true,
+				"proto_deps":   true,
+			},
+		},
 		"build_validation": {
 			NonEmptyAttrs: map[string]bool{
 				"targets": true,
@@ -301,6 +312,10 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 // Loads returns the load statements required for the rules we generate
 func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 	return []rule.LoadInfo{
+		{
+			Name:    "@rules_proto//proto:defs.bzl",
+			Symbols: []string{"proto_library"},
+		},
 		{
 			Name:    "@rules_proto_grpc_java//:defs.bzl",
 			Symbols: []string{"java_grpc_library"},
@@ -315,7 +330,7 @@ func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 		},
 		{
 			Name:    "//tools:proto_bundle.bzl",
-			Symbols: []string{"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle"},
+			Symbols: []string{"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},
 		},
 	}
 }

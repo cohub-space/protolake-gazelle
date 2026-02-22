@@ -6,139 +6,70 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	yaml "gopkg.in/yaml.v3"
 )
 
-// TestGazelleIntegration runs actual Gazelle and verifies BUILD file generation
+// TestGazelleIntegration runs Gazelle on a 2-bundle workspace and verifies
+// BUILD file generation. The workspace has:
+//   - user-service bundle (java+python+js enabled, protos in api/v1/ subdirectory)
+//   - common-types bundle (java+python enabled, js DISABLED, protos in types/v1/ subdirectory)
+//   - Cross-bundle import: user.proto imports common.proto
 func TestGazelleIntegration(t *testing.T) {
-	t.Log("🚀 Starting Gazelle integration test...")
-
-	// Use a temporary directory for testing
 	testDir := t.TempDir()
-	t.Logf("Test workspace created at: %s", testDir)
 
-	// Set up the workspace
 	setupWorkspace(t, testDir)
-
-	// Run Gazelle
 	runGazelle(t, testDir)
 
-	// Verify generated BUILD files
-	verifyBuildFiles(t, testDir)
+	userContent := readBuildFile(t, filepath.Join(testDir, "com", "testcompany", "user"))
+	commonContent := readBuildFile(t, filepath.Join(testDir, "com", "testcompany", "common"))
 
-	t.Log("🎉 Integration test completed successfully!")
+	t.Run("UserBundle", func(t *testing.T) { verifyUserBundle(t, userContent) })
+	t.Run("CommonBundle", func(t *testing.T) { verifyCommonBundle(t, commonContent) })
+	t.Run("SubdirectoryTargets", func(t *testing.T) {
+		verifySubdirectoryTargets(t, userContent, commonContent)
+	})
 }
 
-// setupWorkspace creates a complete workspace with MODULE.bazel, BUILD.bazel, and proto files
-func setupWorkspace(t *testing.T, testDir string) {
-	// Create MODULE.bazel for the test workspace
-	moduleContent := `module(name = "test_workspace", version = "0.0.1")
+// readBuildFile reads a BUILD.bazel or BUILD file from the given directory.
+func readBuildFile(t *testing.T, dir string) string {
+	t.Helper()
+	for _, name := range []string{"BUILD.bazel", "BUILD"} {
+		path := filepath.Join(dir, name)
+		content, err := os.ReadFile(path)
+		if err == nil && len(content) > 0 {
+			t.Logf("Read %s (%d bytes)", path, len(content))
+			return string(content)
+		}
+	}
+	t.Fatalf("No BUILD file with content found in %s", dir)
+	return ""
+}
 
-bazel_dep(name = "bazel_skylib", version = "1.7.1")
-bazel_dep(name = "gazelle", version = "0.44.0", repo_name = "bazel_gazelle")
-bazel_dep(name = "rules_go", version = "0.51.0", repo_name = "io_bazel_rules_go")
+// setupWorkspace creates a 2-bundle workspace in a temp directory.
+func setupWorkspace(t *testing.T, root string) {
+	t.Helper()
+
+	// MODULE.bazel
+	writeFile(t, root, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "gazelle", version = "0.47.0", repo_name = "bazel_gazelle")
+bazel_dep(name = "rules_go", version = "0.60.0", repo_name = "io_bazel_rules_go")
 bazel_dep(name = "protobuf", version = "31.1", repo_name = "com_google_protobuf")
 bazel_dep(name = "rules_proto", version = "7.1.0")
-bazel_dep(name = "rules_proto_grpc", version = "5.3.1")
-bazel_dep(name = "rules_proto_grpc_java", version = "5.3.1")
-bazel_dep(name = "rules_proto_grpc_python", version = "5.3.1")
-bazel_dep(name = "rules_proto_grpc_js", version = "5.3.1")
-`
+bazel_dep(name = "rules_proto_grpc", version = "5.8.0")
+bazel_dep(name = "rules_proto_grpc_java", version = "5.8.0")
+bazel_dep(name = "rules_proto_grpc_python", version = "5.8.0")
+bazel_dep(name = "rules_proto_grpc_js", version = "5.8.0")
+`)
 
-	err := os.WriteFile(filepath.Join(testDir, "MODULE.bazel"), []byte(moduleContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create MODULE.bazel: %v", err)
-	}
-
-	// Create BUILD.bazel for the workspace root
-	buildContent := `load("@bazel_gazelle//:def.bzl", "gazelle")
+	// Root BUILD.bazel
+	writeFile(t, root, "BUILD.bazel", `load("@bazel_gazelle//:def.bzl", "gazelle")
 
 gazelle(name = "gazelle")
-`
+`)
 
-	err = os.WriteFile(filepath.Join(testDir, "BUILD.bazel"), []byte(buildContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create BUILD.bazel: %v", err)
-	}
-
-	// Create tools directory with proto_bundle.bzl
-	toolsDir := filepath.Join(testDir, "tools")
-	err = os.MkdirAll(toolsDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create tools directory: %v", err)
-	}
-
-	// Create proto_bundle.bzl with hybrid approach support
-	protoBundleContent := `# Proto bundle rules with hybrid publishing approach
-def java_proto_bundle(name, proto_deps=[], java_deps=[], java_grpc_deps=[], group_id="", artifact_id="", **kwargs):
-    native.filegroup(
-        name = name,
-        srcs = java_deps + java_grpc_deps + proto_deps,
-        visibility = kwargs.get("visibility", []),
-    )
-
-def py_proto_bundle(name, proto_deps=[], py_deps=[], py_grpc_deps=[], package_name="", **kwargs):
-    native.filegroup(
-        name = name,
-        srcs = py_deps + py_grpc_deps + proto_deps,
-        visibility = kwargs.get("visibility", []),
-    )
-
-def js_proto_bundle(name, proto_deps=[], js_deps=[], js_grpc_web_deps=[], package_name="", **kwargs):
-    native.filegroup(
-        name = name,
-        srcs = js_deps + js_grpc_web_deps + proto_deps,
-        visibility = kwargs.get("visibility", []),
-    )
-
-def build_validation(name, targets=[], **kwargs):
-    native.genrule(
-        name = name,
-        outs = [name + ".validation"],
-        cmd = "echo 'Build validation passed for: %s' > $@" % " ".join(targets),
-        **kwargs
-    )
-`
-
-	err = os.WriteFile(filepath.Join(toolsDir, "proto_bundle.bzl"), []byte(protoBundleContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create proto_bundle.bzl: %v", err)
-	}
-
-	// Create tools BUILD.bazel
-	toolsBuildContent := `exports_files(["proto_bundle.bzl"])
-
-# Stub publishers for testing
-genrule(
-    name = "maven_publisher",
-    outs = ["maven_publisher.sh"],
-    cmd = "echo '#!/bin/bash\\necho Maven publisher: $$@' > $@ && chmod +x $@",
-    executable = True,
-)
-
-genrule(
-    name = "pypi_publisher", 
-    outs = ["pypi_publisher.sh"],
-    cmd = "echo '#!/bin/bash\\necho PyPI publisher: $$@' > $@ && chmod +x $@",
-    executable = True,
-)
-
-genrule(
-    name = "npm_publisher",
-    outs = ["npm_publisher.sh"], 
-    cmd = "echo '#!/bin/bash\\necho NPM publisher: $$@' > $@ && chmod +x $@",
-    executable = True,
-)
-`
-
-	err = os.WriteFile(filepath.Join(toolsDir, "BUILD.bazel"), []byte(toolsBuildContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create tools/BUILD.bazel: %v", err)
-	}
-
-	// Create lake.yaml
-	lakeContent := `config:
+	// lake.yaml — java, python, javascript all enabled at lake level
+	writeFile(t, root, "lake.yaml", `config:
   language_defaults:
     java:
       enabled: true
@@ -152,28 +83,42 @@ genrule(
     javascript:
       enabled: true
       package_name: "@testcompany/proto"
-  build_defaults:
-    base_version: "1.0.0"
-`
+`)
 
-	err = os.WriteFile(filepath.Join(testDir, "lake.yaml"), []byte(lakeContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create lake.yaml: %v", err)
-	}
+	// --- tools/ ---
+	toolsDir := filepath.Join(root, "tools")
+	os.MkdirAll(toolsDir, 0755)
 
-	// Create service directory and bundle.yaml
-	serviceDir := filepath.Join(testDir, "com", "testcompany", "user")
-	err = os.MkdirAll(serviceDir, 0755)
-	if err != nil {
-		t.Fatalf("Failed to create service directory: %v", err)
-	}
+	writeFile(t, toolsDir, "proto_bundle.bzl", `def java_proto_bundle(name, proto_deps=[], java_deps=[], java_grpc_deps=[], group_id="", artifact_id="", **kwargs):
+    native.filegroup(name = name, srcs = java_deps + java_grpc_deps + proto_deps, visibility = kwargs.get("visibility", []))
 
-	bundleContent := `bundle:
-  name: "user-service"
-  owner: "platform-team"
-  proto_package: "com.testcompany.user"
-  description: "User service proto definitions"
-  version: "1.0.0"
+def py_proto_bundle(name, proto_deps=[], py_deps=[], py_grpc_deps=[], package_name="", **kwargs):
+    native.filegroup(name = name, srcs = py_deps + py_grpc_deps + proto_deps, visibility = kwargs.get("visibility", []))
+
+def js_proto_bundle(name, proto_deps=[], js_deps=[], js_grpc_web_deps=[], package_name="", **kwargs):
+    native.filegroup(name = name, srcs = js_deps + js_grpc_web_deps + proto_deps, visibility = kwargs.get("visibility", []))
+
+def build_validation(name, targets=[], **kwargs):
+    native.genrule(name = name, outs = [name + ".validation"], cmd = "echo 'Build validation passed' > $@", **kwargs)
+`)
+
+	writeFile(t, toolsDir, "BUILD.bazel", `exports_files(["proto_bundle.bzl"])
+
+genrule(name = "maven_publisher", outs = ["maven_publisher.sh"], cmd = "echo '#!/bin/bash' > $@ && chmod +x $@", executable = True)
+genrule(name = "pypi_publisher", outs = ["pypi_publisher.sh"], cmd = "echo '#!/bin/bash' > $@ && chmod +x $@", executable = True)
+genrule(name = "npm_publisher", outs = ["npm_publisher.sh"], cmd = "echo '#!/bin/bash' > $@ && chmod +x $@", executable = True)
+`)
+
+	// ---------- user-service bundle ----------
+	userDir := filepath.Join(root, "com", "testcompany", "user")
+	userApiDir := filepath.Join(userDir, "api", "v1")
+	os.MkdirAll(userApiDir, 0755)
+
+	writeFile(t, userDir, "bundle.yaml", `name: "user-service"
+display_name: "User Service"
+description: "User service proto definitions"
+bundle_prefix: "com.testcompany"
+version: "1.0.0"
 config:
   languages:
     java:
@@ -186,119 +131,141 @@ config:
     javascript:
       enabled: true
       package_name: "@testcompany/user-service-proto"
-`
+`)
 
-	err = os.WriteFile(filepath.Join(serviceDir, "bundle.yaml"), []byte(bundleContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create bundle.yaml: %v", err)
-	}
+	// Empty BUILD at bundle root (protos live in subdirectory)
+	writeFile(t, userDir, "BUILD.bazel", "")
 
-	// Create proto files in the service directory (same level as bundle.yaml)
-	userProto := `syntax = "proto3";
+	// api/v1/user.proto — imports common.proto (cross-bundle dependency)
+	writeFile(t, userApiDir, "user.proto", `syntax = "proto3";
 
 package com.testcompany.user.api.v1;
 
+import "com/testcompany/common/types/v1/common.proto";
+
 service UserService {
-    rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
 }
 
 message GetUserRequest {
-    string user_id = 1;
+  string user_id = 1;
 }
 
 message GetUserResponse {
-    string user_id = 1;
-    string name = 2;
-    string email = 3;
-}
-`
-
-	err = os.WriteFile(filepath.Join(serviceDir, "user.proto"), []byte(userProto), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create user.proto: %v", err)
-	}
-
-	// Create types proto file
-	typesProto := `syntax = "proto3";
-
-package com.testcompany.user.types.v1;
-
-message User {
-    string id = 1;
-    string name = 2;
-    string email = 3;
-    int64 created_at = 4;
+  string user_id = 1;
+  string name = 2;
+  com.testcompany.common.types.v1.Status status = 3;
 }
 
-message UserPreferences {
-    string language = 1;
-    string timezone = 2;
-    bool notifications_enabled = 3;
+message CreateUserRequest {
+  string name = 1;
+  string email = 2;
 }
-`
 
-	err = os.WriteFile(filepath.Join(serviceDir, "types.proto"), []byte(typesProto), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create types.proto: %v", err)
-	}
+message CreateUserResponse {
+  string user_id = 1;
+  com.testcompany.common.types.v1.Status status = 2;
+}
+`)
 
-	// Create BUILD.bazel file with proto_library rules in the service directory
-	protoBuildContent := `load("@rules_proto//proto:defs.bzl", "proto_library")
+	writeFile(t, userApiDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
 
 proto_library(
     name = "user_proto",
     srcs = ["user.proto"],
+    deps = ["//com/testcompany/common/types/v1:common_proto"],
     visibility = ["//visibility:public"],
 )
+`)
 
-proto_library(
-    name = "types_proto",
-    srcs = ["types.proto"],
-    visibility = ["//visibility:public"],
-)
-`
+	// ---------- common-types bundle ----------
+	commonDir := filepath.Join(root, "com", "testcompany", "common")
+	commonTypesDir := filepath.Join(commonDir, "types", "v1")
+	os.MkdirAll(commonTypesDir, 0755)
 
-	err = os.WriteFile(filepath.Join(serviceDir, "BUILD.bazel"), []byte(protoBuildContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create service BUILD.bazel: %v", err)
-	}
+	// javascript explicitly disabled at bundle level
+	writeFile(t, commonDir, "bundle.yaml", `name: "common-types"
+display_name: "Common Types"
+description: "Common shared types"
+bundle_prefix: "com.testcompany"
+version: "1.0.0"
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: "com.testcompany.proto"
+      artifact_id: "common-types-proto"
+    python:
+      enabled: true
+      package_name: "testcompany_common_proto"
+    javascript:
+      enabled: false
+`)
 
-	t.Log("✅ Test workspace setup completed")
+	// Empty BUILD at bundle root
+	writeFile(t, commonDir, "BUILD.bazel", "")
+
+	writeFile(t, commonTypesDir, "common.proto", `syntax = "proto3";
+
+package com.testcompany.common.types.v1;
+
+message Status {
+  int32 code = 1;
+  string message = 2;
+  repeated string details = 3;
 }
 
-// runGazelle executes the gazelle binary on the test workspace
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+message Pagination {
+  int32 page = 1;
+  int32 size = 2;
+  int32 total = 3;
+}
+`)
+
+	writeFile(t, commonTypesDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "common_proto",
+    srcs = ["common.proto"],
+    visibility = ["//visibility:public"],
+)
+`)
+}
+
+// writeFile creates parent directories if needed and writes content to dir/name.
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write %s/%s: %v", dir, name, err)
+	}
+}
+
+// runGazelle executes the gazelle binary on the test workspace.
 func runGazelle(t *testing.T, testDir string) {
-	t.Log("🛠️ Setting up to run Gazelle...")
-
-	// Find the gazelle binary from the test data
+	t.Helper()
 	gazelleBinary := findGazelleBinary(t)
-	t.Logf("Using gazelle binary: %s", gazelleBinary)
 
-	// Ensure binary is executable
 	if err := os.Chmod(gazelleBinary, 0755); err != nil {
 		t.Logf("Warning: Could not set execute permissions: %v", err)
-	} else {
-		t.Log("✅ Execute permissions set on gazelle binary")
 	}
 
-	// Change to test directory
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Failed to get current directory: %v", err)
 	}
 	defer os.Chdir(oldWd)
 
-	t.Logf("Changing to test directory: %s", testDir)
-	err = os.Chdir(testDir)
-	if err != nil {
+	if err := os.Chdir(testDir); err != nil {
 		t.Fatalf("Failed to change to test directory: %v", err)
 	}
 
-	// Run gazelle binary with protolake language
-	t.Log("🚀 Running gazelle with protolake language...")
 	cmd := exec.Command(gazelleBinary, "-lang=protolake")
-
-	// Set environment variables for testing
 	cmd.Env = append(os.Environ(),
 		"VERSION=1.0.0-test",
 		"MAVEN_REPO=file://~/.m2/repository",
@@ -307,21 +274,19 @@ func runGazelle(t *testing.T, testDir string) {
 	)
 
 	output, err := cmd.CombinedOutput()
-	t.Logf("📋 Gazelle output:\n%s", string(output))
-
+	t.Logf("Gazelle output:\n%s", string(output))
 	if err != nil {
-		t.Fatalf("❌ Gazelle execution failed: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Gazelle execution failed: %v\nOutput: %s", err, string(output))
 	}
-
-	t.Log("✅ Gazelle execution completed successfully")
 }
 
-// findGazelleBinary locates the gazelle binary in the runfiles
+// findGazelleBinary locates the gazelle binary in the runfiles.
 func findGazelleBinary(t *testing.T) string {
+	t.Helper()
+
 	// Look inside the gazelle_with_protolake_ directory
 	gazelleDir := "gazelle_with_protolake_"
 	if info, err := os.Stat(gazelleDir); err == nil && info.IsDir() {
-		// Try to find the binary inside the directory
 		possibleBinaries := []string{
 			filepath.Join(gazelleDir, "gazelle_with_protolake"),
 			filepath.Join(gazelleDir, "gazelle_with_protolake_"),
@@ -343,8 +308,8 @@ func findGazelleBinary(t *testing.T) string {
 	possibleNames := []string{
 		"gazelle_with_protolake_",
 		"gazelle_with_protolake",
-		"gazelle_with_protolake_.exe", // Windows
-		"gazelle_with_protolake.exe",  // Windows
+		"gazelle_with_protolake_.exe",
+		"gazelle_with_protolake.exe",
 	}
 
 	for _, name := range possibleNames {
@@ -356,194 +321,107 @@ func findGazelleBinary(t *testing.T) string {
 		}
 	}
 
-	t.Fatalf("❌ Could not find gazelle binary in runfiles")
+	t.Fatalf("Could not find gazelle binary in runfiles")
 	return ""
 }
 
-// verifyBuildFiles checks that BUILD files were generated with correct hybrid approach content
-func verifyBuildFiles(t *testing.T, testDir string) {
-	// Check that BUILD file was generated in the service directory
-	buildFile := filepath.Join(testDir, "com", "testcompany", "user", "BUILD.bazel")
+// ---------------------------------------------------------------------------
+// Per-bundle verification subtests
+// ---------------------------------------------------------------------------
 
-	if _, err := os.Stat(buildFile); os.IsNotExist(err) {
-		t.Log("BUILD.bazel not found - checking for BUILD file...")
-		buildFile = filepath.Join(testDir, "com", "testcompany", "user", "BUILD")
-		if _, err := os.Stat(buildFile); os.IsNotExist(err) {
-			t.Errorf("❌ No BUILD file generated in service directory")
-			return
-		}
+// verifyUserBundle checks the user-service bundle BUILD file.
+// All 3 languages are enabled; cross-bundle dependency on common.
+func verifyUserBundle(t *testing.T, content string) {
+	// Bundle rules
+	requireContains(t, content, "java_proto_bundle", "java_proto_bundle rule")
+	requireContains(t, content, `group_id = "com.testcompany.proto"`, "Java group_id")
+	requireContains(t, content, `artifact_id = "user-service-proto"`, "Java artifact_id")
+	requireContains(t, content, "py_proto_bundle", "py_proto_bundle rule")
+	requireContains(t, content, `package_name = "testcompany_user_proto"`, "Python package_name")
+	requireContains(t, content, "js_proto_bundle", "js_proto_bundle rule")
+	requireContains(t, content, `package_name = "@testcompany/user-service-proto"`, "JS package_name")
+
+	// gRPC rules
+	requireContains(t, content, "java_grpc_library", "java_grpc_library")
+	requireContains(t, content, "python_grpc_library", "python_grpc_library")
+	requireContains(t, content, "js_grpc_library", "js_grpc_library")
+	requireContains(t, content, "js_grpc_web_library", "js_grpc_web_library")
+
+	// Aggregated proto rule
+	requireContains(t, content, "_all_protos", "aggregated proto rule")
+
+	// Hybrid approach: environment variables in publish genrules
+	requireContains(t, content, "${VERSION:-", "VERSION env var in publish cmd")
+	requireContains(t, content, "${MAVEN_REPO:-", "MAVEN_REPO env var in publish cmd")
+	requireContains(t, content, "publish_", "publish genrule")
+
+	// build_validation with all 3 language bundle targets
+	requireContains(t, content, "build_validation", "build_validation rule")
+	requireContains(t, content, "user-service_java_bundle", "java target in build_validation")
+	requireContains(t, content, "user-service_py_bundle", "python target in build_validation")
+	requireContains(t, content, "user-service_js_bundle", "js target in build_validation")
+
+	// No hardcoded version (hybrid approach)
+	if strings.Contains(content, `version = "1.0.0"`) {
+		t.Error("Found hardcoded version in bundle rule - violates hybrid approach")
 	}
 
-	// Read the generated BUILD file
-	content, err := os.ReadFile(buildFile)
-	if err != nil {
-		t.Fatalf("Failed to read generated BUILD file: %v", err)
-	}
-
-	buildContent := string(content)
-
-	// Test hybrid approach implementation
-	testHybridApproach(t, buildContent)
+	// Cross-bundle dependency: user.proto imports common.proto, so the
+	// generated gRPC rules should reference the common types target.
+	requireContains(t, content, "//com/testcompany/common/types/v1:", "cross-bundle proto target reference")
 }
 
-// testHybridApproach verifies the hybrid approach is implemented correctly
-func testHybridApproach(t *testing.T, buildContent string) {
-	t.Log("🔍 Verifying hybrid approach implementation...")
+// verifyCommonBundle checks the common-types bundle BUILD file.
+// Java and Python enabled; JavaScript explicitly disabled.
+func verifyCommonBundle(t *testing.T, content string) {
+	// Enabled languages
+	requireContains(t, content, "java_proto_bundle", "java_proto_bundle rule")
+	requireContains(t, content, `group_id = "com.testcompany.proto"`, "Java group_id")
+	requireContains(t, content, `artifact_id = "common-types-proto"`, "Java artifact_id")
+	requireContains(t, content, "py_proto_bundle", "py_proto_bundle rule")
+	requireContains(t, content, `package_name = "testcompany_common_proto"`, "Python package_name")
 
-	// Check for static configuration in BUILD file
-	staticChecks := []struct {
-		name     string
-		pattern  string
-		required bool
-	}{
-		{"Java group_id", `group_id = "com.testcompany.proto"`, true},
-		{"Java artifact_id", `artifact_id = "user-service-proto"`, true},
-		{"Python package_name", `package_name = "testcompany_user_proto"`, true},
-		{"JavaScript package_name", `package_name = "@testcompany/user-service-proto"`, true},
-		{"Java bundle rule", "java_proto_bundle", true},
-		{"Python bundle rule", "py_proto_bundle", true},
-		{"JavaScript bundle rule", "js_proto_bundle", true},
-		{"gRPC library", "grpc_library", true},
-		{"Aggregated proto rule", "_all_protos", true},
-	}
+	// JavaScript must NOT be generated (explicitly disabled in bundle.yaml)
+	requireAbsent(t, content, "js_proto_bundle", "js_proto_bundle (JS disabled)")
+	requireAbsent(t, content, "js_grpc_library", "js_grpc_library (JS disabled)")
+	requireAbsent(t, content, "js_grpc_web_library", "js_grpc_web_library (JS disabled)")
+	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
 
-	staticFound := 0
-	for _, check := range staticChecks {
-		if strings.Contains(buildContent, check.pattern) {
-			staticFound++
-			t.Logf("✅ Found static config: %s", check.name)
-		} else {
-			if check.required {
-				t.Errorf("❌ Missing required static config: %s", check.name)
-			} else {
-				t.Logf("⚠️ Missing optional static config: %s", check.name)
-			}
-		}
-	}
+	// Publishing rules for maven and pypi only
+	requireContains(t, content, "publish_common-types_to_maven", "maven publish rule")
+	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish rule")
 
-	// Check for dynamic configuration (environment variables)
-	dynamicChecks := []struct {
-		name     string
-		pattern  string
-		required bool
-	}{
-		{"Version environment variable", "${VERSION:-", true},
-		{"Maven repo environment variable", "${MAVEN_REPO:-", true},
-		{"Publishing rule", "publish_", true},
-	}
+	// build_validation with only java and python
+	requireContains(t, content, "build_validation", "build_validation rule")
+	requireContains(t, content, "common-types_java_bundle", "java target in build_validation")
+	requireContains(t, content, "common-types_py_bundle", "python target in build_validation")
+	requireAbsent(t, content, "common-types_js_bundle", "js target in build_validation (JS disabled)")
+}
 
-	dynamicFound := 0
-	for _, check := range dynamicChecks {
-		if strings.Contains(buildContent, check.pattern) {
-			dynamicFound++
-			t.Logf("✅ Found dynamic config: %s", check.name)
-		} else {
-			if check.required {
-				t.Errorf("❌ Missing required dynamic config: %s", check.name)
-			} else {
-				t.Logf("⚠️ Missing optional dynamic config: %s", check.name)
-			}
-		}
-	}
+// verifySubdirectoryTargets checks that proto files in subdirectories
+// (api/v1/, types/v1/) are discovered and included in bundle targets.
+func verifySubdirectoryTargets(t *testing.T, userContent, commonContent string) {
+	// User bundle should reference the api/v1 subdirectory proto target
+	requireContains(t, userContent, "com/testcompany/user/api/v1", "user api/v1 subdirectory proto target")
 
-	// Check that version is NOT hardcoded in bundle rules (hybrid approach)
-	if strings.Contains(buildContent, `version = "1.0.0"`) {
-		t.Error("❌ Found hardcoded version in bundle rule - violates hybrid approach")
-	} else {
-		t.Log("✅ No hardcoded version in bundle rules - hybrid approach implemented correctly")
-	}
+	// Common bundle should reference the types/v1 subdirectory proto target
+	requireContains(t, commonContent, "com/testcompany/common/types/v1", "common types/v1 subdirectory proto target")
+}
 
-	// Summary
-	t.Logf("📊 Static configuration checks: %d/%d found", staticFound, len(staticChecks))
-	t.Logf("📊 Dynamic configuration checks: %d/%d found", dynamicFound, len(dynamicChecks))
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
 
-	if staticFound < len(staticChecks) {
-		t.Error("❌ Missing some static configuration")
-	}
-
-	if dynamicFound < len(dynamicChecks) {
-		t.Error("❌ Missing some dynamic configuration")
-	}
-
-	if staticFound == len(staticChecks) && dynamicFound == len(dynamicChecks) {
-		t.Log("🎯 Hybrid approach verification completed successfully!")
+func requireContains(t *testing.T, content, pattern, description string) {
+	t.Helper()
+	if !strings.Contains(content, pattern) {
+		t.Errorf("Missing required content: %s (pattern: %q)", description, pattern)
 	}
 }
 
-// TestConfigurationLoading tests the configuration loading with existing testdata
-func TestConfigurationLoading(t *testing.T) {
-	// Find testdata directory
-	testDataDir := findTestDataDir(t)
-
-	// Test lake configuration loading
-	testLakeConfig(t, testDataDir)
-
-	// Test bundle configuration loading
-	testBundleConfigs(t, testDataDir)
-}
-
-// findTestDataDir finds the testdata directory
-func findTestDataDir(t *testing.T) string {
-	possiblePaths := []string{
-		"testdata/basic_lake",
-		"../testdata/basic_lake",
-		"protolake-gazelle/testdata/basic_lake",
-		"external/protolake_gazelle/testdata/basic_lake",
+func requireAbsent(t *testing.T, content, pattern, description string) {
+	t.Helper()
+	if strings.Contains(content, pattern) {
+		t.Errorf("Found unexpected content: %s (pattern: %q)", description, pattern)
 	}
-
-	for _, path := range possiblePaths {
-		if _, err := os.Stat(path); err == nil {
-			t.Logf("Found testdata directory at: %s", path)
-			return path
-		}
-	}
-
-	t.Skip("testdata directory not found - skipping configuration test")
-	return ""
-}
-
-// testLakeConfig validates lake.yaml configuration
-func testLakeConfig(t *testing.T, testDataDir string) {
-	lakeYamlPath := filepath.Join(testDataDir, "lake.yaml")
-
-	data, err := os.ReadFile(lakeYamlPath)
-	if err != nil {
-		t.Fatalf("Failed to read lake.yaml: %v", err)
-	}
-
-	var config map[string]interface{}
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		t.Fatalf("Invalid YAML in lake.yaml: %v", err)
-	}
-
-	if _, ok := config["config"]; !ok {
-		t.Errorf("Missing 'config' section in lake.yaml")
-	}
-
-	t.Log("✅ lake.yaml is valid")
-}
-
-// testBundleConfigs validates bundle.yaml configuration files
-func testBundleConfigs(t *testing.T, testDataDir string) {
-	userBundlePath := filepath.Join(testDataDir, "com", "testcompany", "user", "bundle.yaml")
-
-	data, err := os.ReadFile(userBundlePath)
-	if err != nil {
-		t.Fatalf("Failed to read user bundle.yaml: %v", err)
-	}
-
-	var userConfig map[string]interface{}
-	if err := yaml.Unmarshal(data, &userConfig); err != nil {
-		t.Fatalf("Invalid YAML in user bundle.yaml: %v", err)
-	}
-
-	if _, ok := userConfig["bundle"]; !ok {
-		t.Errorf("Missing 'bundle' section in user bundle.yaml")
-	}
-
-	if _, ok := userConfig["config"]; !ok {
-		t.Errorf("Missing 'config' section in user bundle.yaml")
-	}
-
-	t.Log("✅ bundle.yaml files are valid")
 }
