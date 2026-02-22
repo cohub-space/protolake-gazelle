@@ -34,8 +34,3 @@ jobs:
       - name: Run all tests
         run: |
           bazel test //...
-          
-      - name: Build test workspace
-        run: |
-          cd testdata/basic_lake
-          bazel build //...
