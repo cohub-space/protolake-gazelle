@@ -2,7 +2,6 @@ package language
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"github.com/bazelbuild/bazel-gazelle/config"
 	"github.com/bazelbuild/bazel-gazelle/rule"
 )
+
+var importPattern = regexp.MustCompile(`import\s+"([^"]+)"`)
 
 // generateBundleRules creates the bundle rules for a bundle using the hybrid approach
 // In the hybrid approach:
@@ -34,11 +35,14 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	log.Printf("Bundle %s has %d direct proto targets and %d total with transitive deps",
 		bundleName, len(protoTargets), len(allProtoTargets))
 
+	// Detect external proto imports to determine additional Java dependencies
+	externalJavaDeps := detectExternalJavaDeps(bundleDir)
+
 	// Generate Java bundle if enabled
 	log.Printf("Checking Java bundle generation - Enabled: %v, GroupId: '%s', ArtifactId: '%s'",
 		config.JavaConfig.Enabled, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
 	if config.JavaConfig.Enabled && config.JavaConfig.GroupId != "" && config.JavaConfig.ArtifactId != "" {
-		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets)...)
+		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalJavaDeps)...)
 	} else {
 		log.Printf("Skipping Java bundle generation for %s", bundleName)
 	}
@@ -59,6 +63,16 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 		rules = append(rules, generateJavaScriptBundleRules(config, bundleName, allProtoTargets)...)
 	} else {
 		log.Printf("Skipping JavaScript bundle generation for %s", bundleName)
+	}
+
+	// Generate descriptor set if enabled
+	if config.GenerateDescriptorSet {
+		rules = append(rules, generateDescriptorSetRules(config, bundleName, protoTargets)...)
+	}
+
+	// Generate proto-loader bundle if enabled
+	if config.JavaScriptConfig.Enabled && config.JavaScriptConfig.ProtoLoader && config.JavaScriptConfig.PackageName != "" {
+		rules = append(rules, generateProtoLoaderBundleRules(config, bundleName, allProtoTargets)...)
 	}
 
 	// Create a build test to verify all bundles
@@ -83,12 +97,16 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 }
 
 // generateJavaBundleRules creates Java bundle rules with hybrid publishing
-func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
+func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string, externalJavaDeps []string) []*rule.Rule {
 	var rules []*rule.Rule
 
 	// Java gRPC library (includes both proto messages and gRPC stubs)
 	javaGrpcRule := rule.NewRule("java_grpc_library", fmt.Sprintf("%s_java_grpc", bundleName))
 	javaGrpcRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
+	if len(externalJavaDeps) > 0 {
+		javaGrpcRule.SetAttr("deps", externalJavaDeps)
+		log.Printf("Added %d external Java deps to %s_java_grpc: %v", len(externalJavaDeps), bundleName, externalJavaDeps)
+	}
 	javaGrpcRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, javaGrpcRule)
 
@@ -102,6 +120,9 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	javaBundleRule.SetAttr("group_id", config.JavaConfig.GroupId)
 	javaBundleRule.SetAttr("artifact_id", config.JavaConfig.ArtifactId)
 	// NOTE: NO version attribute - unified rule reads from environment variable
+	if config.JavaConfig.FatJar {
+		javaBundleRule.SetAttr("fat_jar", true)
+	}
 	javaBundleRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, javaBundleRule)
 
@@ -214,11 +235,11 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	// Command with environment variable expansion
 	// NPM publisher expects bundle path and coordinates file as positional args
 	// Create coordinates file inline since we can't access output groups in genrule
-	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > coords.txt && "+
-		"NPM_PUBLISH_MODE=file $(location //tools:publish_to_npm) "+
-		"$(location :%s_js_bundle) coords.txt "+
+	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > %s_coords.txt && "+
+		"$(location //tools:publish_to_npm) "+
+		"$(location :%s_js_bundle) %s_coords.txt "+
 		"> $@",
-		config.JavaScriptConfig.PackageName, bundleName)
+		config.JavaScriptConfig.PackageName, bundleName, bundleName, bundleName)
 	publishNpmRule.SetAttr("cmd", publishCmd)
 	publishNpmRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_npm"}})
 	rules = append(rules, publishNpmRule)
@@ -230,6 +251,81 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	rules = append(rules, publishNpmAlias)
 
 	return rules
+}
+
+// generateDescriptorSetRules creates a proto_descriptor_set rule for Envoy/gRPC tools
+func generateDescriptorSetRules(config *MergedConfig, bundleName string, protoTargets []string) []*rule.Rule {
+	var rules []*rule.Rule
+
+	descriptorRule := rule.NewRule("proto_descriptor_set", fmt.Sprintf("%s_descriptor", bundleName))
+	descriptorRule.SetAttr("deps", rule.PlatformStrings{Generic: protoTargets})
+	descriptorRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, descriptorRule)
+
+	return rules
+}
+
+// generateProtoLoaderBundleRules creates proto-loader rules for @grpc/proto-loader packages
+func generateProtoLoaderBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
+	var rules []*rule.Rule
+
+	// Proto-loader bundle rule
+	protoLoaderRule := rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName))
+	protoLoaderRule.SetAttr("proto_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_all_protos", bundleName)}})
+	// Use the same package name with a -loader suffix to distinguish from compiled JS package
+	loaderPkgName := config.JavaScriptConfig.PackageName + "-loader"
+	protoLoaderRule.SetAttr("package_name", loaderPkgName)
+	protoLoaderRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, protoLoaderRule)
+
+	// Publishing rule for proto-loader package
+	publishProtoLoaderRule := rule.NewRule("genrule", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName))
+	publishProtoLoaderRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_proto_loader_bundle", bundleName)}})
+	publishProtoLoaderRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_proto_loader_npm.log"}})
+	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > %s_proto_loader_coords.txt && "+
+		"$(location //tools:publish_proto_loader_to_npm) "+
+		"$(location :%s_proto_loader_bundle) %s_proto_loader_coords.txt "+
+		"> $@",
+		loaderPkgName, bundleName, bundleName, bundleName)
+	publishProtoLoaderRule.SetAttr("cmd", publishCmd)
+	publishProtoLoaderRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_proto_loader_to_npm"}})
+	rules = append(rules, publishProtoLoaderRule)
+
+	return rules
+}
+
+// detectExternalJavaDeps scans proto files in a bundle directory and returns
+// Bazel Java library targets needed for external proto imports (googleapis, protovalidate).
+func detectExternalJavaDeps(bundleDir string) []string {
+	needsGoogleapis := false
+	needsProtovalidate := false
+
+	protoFiles := collectBundleProtoFiles(bundleDir)
+	for _, protoFile := range protoFiles {
+		content, err := os.ReadFile(protoFile)
+		if err != nil {
+			continue
+		}
+		matches := importPattern.FindAllStringSubmatch(string(content), -1)
+		for _, match := range matches {
+			importPath := match[1]
+			if strings.HasPrefix(importPath, "google/api/") {
+				needsGoogleapis = true
+			}
+			if strings.HasPrefix(importPath, "buf/validate/") {
+				needsProtovalidate = true
+			}
+		}
+	}
+
+	var deps []string
+	if needsGoogleapis {
+		deps = append(deps, "@googleapis//google/api:api_java_proto")
+	}
+	if needsProtovalidate {
+		deps = append(deps, "//:protovalidate_java_proto")
+	}
+	return deps
 }
 
 // collectBundleTransitiveDependencies finds transitive dependencies for a specific bundle
@@ -276,7 +372,7 @@ func collectBundleProtoFiles(bundleDir string) []string {
 		// Only include .proto files
 		if strings.HasSuffix(path, ".proto") {
 			// Skip bazel output directories
-			if !strings.Contains(path, "bazel-") {
+			if !strings.Contains(path, bazelDirPrefix) {
 				protoFiles = append(protoFiles, path)
 			}
 		}
@@ -289,14 +385,13 @@ func collectBundleProtoFiles(bundleDir string) []string {
 
 // collectImportsFromProtoFile parses a single proto file and collects its imports
 func collectImportsFromProtoFile(protoFile string, importToTarget map[string]string, allDeps map[string]bool) {
-	content, err := ioutil.ReadFile(protoFile)
+	content, err := os.ReadFile(protoFile)
 	if err != nil {
 		log.Printf("Failed to read proto file %s: %v", protoFile, err)
 		return
 	}
 
 	// Extract imports
-	importPattern := regexp.MustCompile(`import\s+"([^"]+)"`)
 	matches := importPattern.FindAllStringSubmatch(string(content), -1)
 
 	for _, match := range matches {
@@ -330,7 +425,7 @@ func buildImportIndex(repoRoot string, index map[string]string) {
 		}
 
 		// Skip bazel output directories
-		if strings.Contains(path, "bazel-") {
+		if strings.Contains(path, bazelDirPrefix) {
 			return nil
 		}
 
@@ -342,16 +437,16 @@ func buildImportIndex(repoRoot string, index map[string]string) {
 
 		// Find BUILD file for this proto
 		dir := filepath.Dir(path)
-		buildPath := filepath.Join(dir, "BUILD.bazel")
+		buildPath := filepath.Join(dir, buildBazelFile)
 		if _, err := os.Stat(buildPath); os.IsNotExist(err) {
-			buildPath = filepath.Join(dir, "BUILD")
+			buildPath = filepath.Join(dir, buildFile)
 			if _, err := os.Stat(buildPath); os.IsNotExist(err) {
 				return nil
 			}
 		}
 
 		// Read BUILD file and find the proto_library rule
-		content, err := ioutil.ReadFile(buildPath)
+		content, err := os.ReadFile(buildPath)
 		if err == nil {
 			if target := findProtoTarget(string(content), filepath.Base(path)); target != "" {
 				pkg, _ := filepath.Rel(repoRoot, dir)
@@ -373,44 +468,3 @@ func findProtoTarget(buildContent, protoFile string) string {
 	return ""
 }
 
-// discoverProtosRecursively finds all proto targets in a directory and its subdirectories
-func discoverProtosRecursively(rootDir string, repoRoot string) []string {
-	var targets []string
-
-	filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		// Look for BUILD files
-		if info.Name() == "BUILD.bazel" || info.Name() == "BUILD" {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-
-			buildContent := string(content)
-			protoLibraryPattern := regexp.MustCompile(`proto_library\s*\(\s*[^)]*name\s*=\s*"([^"]+)"[^)]*\)`)
-			matches := protoLibraryPattern.FindAllStringSubmatch(buildContent, -1)
-
-			for _, match := range matches {
-				if len(match) > 1 {
-					name := match[1]
-					dir := filepath.Dir(path)
-					pkg, err := filepath.Rel(repoRoot, dir)
-					if err == nil {
-						if pkg == "." {
-							targets = append(targets, ":"+name)
-						} else {
-							targets = append(targets, "//"+pkg+":"+name)
-						}
-					}
-				}
-			}
-		}
-
-		return nil
-	})
-
-	return targets
-}

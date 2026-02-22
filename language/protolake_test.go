@@ -210,8 +210,6 @@ config:
     javascript:
       enabled: true
       package_name: "@example/proto"
-  build_defaults:
-    base_version: "1.0.0"
 `
 
 		err := os.WriteFile(filepath.Join(tmpDir, "lake.yaml"), []byte(lakeYaml), 0644)
@@ -247,11 +245,6 @@ config:
 		if config.Config.LanguageDefaults.Javascript.PackageName != "@example/proto" {
 			t.Errorf("Expected JavaScript package_name '@example/proto', got '%s'",
 				config.Config.LanguageDefaults.Javascript.PackageName)
-		}
-
-		if config.Config.BuildDefaults.BaseVersion != "1.0.0" {
-			t.Errorf("Expected base_version '1.0.0', got '%s'",
-				config.Config.BuildDefaults.BaseVersion)
 		}
 	})
 
@@ -377,12 +370,10 @@ func TestLoadBundleConfig(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		bundleYaml := `
-bundle:
-  name: "user-service"
-  owner: "platform-team"
-  proto_package: "com.example.user"
-  description: "User service proto definitions"
-  version: "1.0.0"
+name: "user-service"
+display_name: "User Service"
+description: "User service proto definitions"
+version: "1.0.0"
 config:
   languages:
     java:
@@ -412,24 +403,16 @@ config:
 		}
 
 		// Verify parsed values
-		if config.Bundle.Name != "user-service" {
-			t.Errorf("Expected bundle name 'user-service', got '%s'", config.Bundle.Name)
+		if config.Name != "user-service" {
+			t.Errorf("Expected bundle name 'user-service', got '%s'", config.Name)
 		}
 
-		if config.Bundle.Owner != "platform-team" {
-			t.Errorf("Expected owner 'platform-team', got '%s'", config.Bundle.Owner)
+		if config.Description != "User service proto definitions" {
+			t.Errorf("Expected description 'User service proto definitions', got '%s'", config.Description)
 		}
 
-		if config.Bundle.ProtoPackage != "com.example.user" {
-			t.Errorf("Expected proto_package 'com.example.user', got '%s'", config.Bundle.ProtoPackage)
-		}
-
-		if config.Bundle.Description != "User service proto definitions" {
-			t.Errorf("Expected description 'User service proto definitions', got '%s'", config.Bundle.Description)
-		}
-
-		if config.Bundle.Version != "1.0.0" {
-			t.Errorf("Expected version '1.0.0', got '%s'", config.Bundle.Version)
+		if config.Version != "1.0.0" {
+			t.Errorf("Expected version '1.0.0', got '%s'", config.Version)
 		}
 
 		if config.Config.Languages.Java.GroupId != "com.example.proto" {
@@ -472,9 +455,7 @@ config:
 		tmpDir := t.TempDir()
 
 		invalidYaml := `
-bundle:
-  name: "test-bundle"
-  owner: "test-team"
+name: "test-bundle"
 config:
   languages:
     java:
@@ -502,9 +483,8 @@ config:
 		tmpDir := t.TempDir()
 
 		bundleYaml := `
-bundle:
-  name: ""
-  owner: "test-team"
+name: ""
+display_name: "Test Bundle"
 config:
   languages:
     java:
@@ -531,8 +511,7 @@ config:
 		tmpDir := t.TempDir()
 
 		bundleYaml := `
-bundle:
-  owner: "test-team"
+display_name: "Test Bundle"
 config:
   languages:
     java:
@@ -559,9 +538,8 @@ config:
 		tmpDir := t.TempDir()
 
 		bundleYaml := `
-bundle:
-  name: "minimal-bundle"
-  owner: "test-team"
+name: "minimal-bundle"
+display_name: "Minimal Bundle"
 `
 
 		err := os.WriteFile(filepath.Join(tmpDir, "bundle.yaml"), []byte(bundleYaml), 0644)
@@ -578,12 +556,12 @@ bundle:
 			t.Fatal("Should load minimal valid configuration")
 		}
 
-		if config.Bundle.Name != "minimal-bundle" {
-			t.Errorf("Expected bundle name 'minimal-bundle', got '%s'", config.Bundle.Name)
+		if config.Name != "minimal-bundle" {
+			t.Errorf("Expected bundle name 'minimal-bundle', got '%s'", config.Name)
 		}
 
-		if config.Bundle.Owner != "test-team" {
-			t.Errorf("Expected owner 'test-team', got '%s'", config.Bundle.Owner)
+		if config.DisplayName != "Minimal Bundle" {
+			t.Errorf("Expected display_name 'Minimal Bundle', got '%s'", config.DisplayName)
 		}
 	})
 
@@ -593,9 +571,8 @@ bundle:
 
 		bundleYamlPath := filepath.Join(tmpDir, "bundle.yaml")
 		err := os.WriteFile(bundleYamlPath, []byte(`
-bundle:
-  name: "test-bundle"
-  owner: "test-team"
+name: "test-bundle"
+display_name: "Test Bundle"
 `), 0644)
 		if err != nil {
 			t.Fatalf("Failed to create bundle.yaml: %v", err)
@@ -624,8 +601,7 @@ bundle:
 func TestMergeConfigurations(t *testing.T) {
 	// Test with nil lake config
 	bundleConfig := &BundleConfig{}
-	bundleConfig.Bundle.Name = "test-bundle"
-	bundleConfig.Bundle.Owner = "test-team"
+	bundleConfig.Name = "test-bundle"
 	bundleConfig.Config.Languages.Java.Enabled = boolPtr(true)
 	bundleConfig.Config.Languages.Java.GroupId = "com.test.proto"
 	bundleConfig.Config.Languages.Java.ArtifactId = "test-bundle-proto"
@@ -648,8 +624,7 @@ func TestMergeConfigurations(t *testing.T) {
 	lakeConfig.Config.LanguageDefaults.Python.PackageName = "default_proto"
 
 	bundleConfig2 := &BundleConfig{}
-	bundleConfig2.Bundle.Name = "test-bundle-2"
-	bundleConfig2.Bundle.Owner = "test-team-2"
+	bundleConfig2.Name = "test-bundle-2"
 	bundleConfig2.Config.Languages.Java.Enabled = boolPtr(true)
 	bundleConfig2.Config.Languages.Java.GroupId = "com.override.proto" // Override
 	bundleConfig2.Config.Languages.Java.ArtifactId = "test-bundle-2-proto"
@@ -676,11 +651,10 @@ func TestMergeConfigurations(t *testing.T) {
 func TestBundleConfigStructure(t *testing.T) {
 	// Test that we can create the basic structures without file I/O
 	bundleConfig := &BundleConfig{}
-	bundleConfig.Bundle.Name = "test-bundle"
-	bundleConfig.Bundle.Owner = "test-team"
-	bundleConfig.Bundle.ProtoPackage = "com.test.bundle"
-	bundleConfig.Bundle.Description = "Test bundle"
-	bundleConfig.Bundle.Version = "1.0.0"
+	bundleConfig.Name = "test-bundle"
+	bundleConfig.DisplayName = "Test Bundle"
+	bundleConfig.Description = "Test bundle"
+	bundleConfig.Version = "1.0.0"
 	bundleConfig.Config.Languages.Java.Enabled = boolPtr(true)
 	bundleConfig.Config.Languages.Java.GroupId = "com.test.proto"
 	bundleConfig.Config.Languages.Java.ArtifactId = "test-proto"
@@ -689,12 +663,12 @@ func TestBundleConfigStructure(t *testing.T) {
 	bundleConfig.Config.Languages.Javascript.Enabled = boolPtr(true)
 	bundleConfig.Config.Languages.Javascript.PackageName = "@test/proto"
 
-	if bundleConfig.Bundle.Name != "test-bundle" {
-		t.Errorf("Expected bundle name 'test-bundle', got '%s'", bundleConfig.Bundle.Name)
+	if bundleConfig.Name != "test-bundle" {
+		t.Errorf("Expected bundle name 'test-bundle', got '%s'", bundleConfig.Name)
 	}
 
-	if bundleConfig.Bundle.ProtoPackage != "com.test.bundle" {
-		t.Errorf("Expected proto_package 'com.test.bundle', got '%s'", bundleConfig.Bundle.ProtoPackage)
+	if bundleConfig.Description != "Test bundle" {
+		t.Errorf("Expected description 'Test bundle', got '%s'", bundleConfig.Description)
 	}
 
 	if bundleConfig.Config.Languages.Java.GroupId != "com.test.proto" {
@@ -714,7 +688,6 @@ func TestLakeConfigStructure(t *testing.T) {
 	lakeConfig.Config.LanguageDefaults.Python.Version = ">=3.8"
 	lakeConfig.Config.LanguageDefaults.Javascript.Enabled = true
 	lakeConfig.Config.LanguageDefaults.Javascript.PackageName = "@lake/proto"
-	lakeConfig.Config.BuildDefaults.BaseVersion = "1.0.0"
 
 	if lakeConfig.Config.LanguageDefaults.Java.GroupId != "com.lake.proto" {
 		t.Errorf("Expected Java group_id 'com.lake.proto', got '%s'", lakeConfig.Config.LanguageDefaults.Java.GroupId)

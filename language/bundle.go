@@ -17,6 +17,7 @@ type LakeConfig struct {
 				GroupId       string `yaml:"group_id"`
 				SourceVersion string `yaml:"source_version"`
 				TargetVersion string `yaml:"target_version"`
+				FatJar        bool   `yaml:"fat_jar"`
 			} `yaml:"java"`
 			Python struct {
 				Enabled     bool   `yaml:"enabled"`
@@ -26,11 +27,9 @@ type LakeConfig struct {
 			Javascript struct {
 				Enabled     bool   `yaml:"enabled"`
 				PackageName string `yaml:"package_name"`
+				ProtoLoader bool   `yaml:"proto_loader"`
 			} `yaml:"javascript"`
 		} `yaml:"language_defaults"`
-		BuildDefaults struct {
-			BaseVersion string `yaml:"base_version"`
-		} `yaml:"build_defaults"`
 	} `yaml:"config"`
 }
 
@@ -46,11 +45,13 @@ type BundleConfig struct {
 
 	// Config section with language-specific settings
 	Config struct {
-		Languages struct {
+		GenerateDescriptorSet bool `yaml:"generate_descriptor_set"`
+		Languages             struct {
 			Java struct {
 				Enabled    *bool  `yaml:"enabled"` // Use pointer to distinguish between unset and false
 				GroupId    string `yaml:"group_id"`
 				ArtifactId string `yaml:"artifact_id"`
+				FatJar     *bool  `yaml:"fat_jar"`
 			} `yaml:"java"`
 			Python struct {
 				Enabled     *bool  `yaml:"enabled"` // Use pointer to distinguish between unset and false
@@ -59,6 +60,7 @@ type BundleConfig struct {
 			Javascript struct {
 				Enabled     *bool  `yaml:"enabled"` // Use pointer to distinguish between unset and false
 				PackageName string `yaml:"package_name"`
+				ProtoLoader *bool  `yaml:"proto_loader"`
 			} `yaml:"javascript"`
 		} `yaml:"languages"`
 	} `yaml:"config"`
@@ -70,7 +72,7 @@ func LoadLakeConfig(startDir string) (*LakeConfig, error) {
 	log.Printf("[protolake-gazelle] LoadLakeConfig starting from: %s", startDir)
 	dir := startDir
 	for {
-		lakeFile := filepath.Join(dir, "lake.yaml")
+		lakeFile := filepath.Join(dir, lakeYamlFile)
 		log.Printf("[protolake-gazelle] Checking for lake.yaml at: %s", lakeFile)
 		if _, err := os.Stat(lakeFile); err == nil {
 			log.Printf("[protolake-gazelle] Found lake.yaml at: %s", lakeFile)
@@ -100,7 +102,7 @@ func LoadLakeConfig(startDir string) (*LakeConfig, error) {
 
 // LoadBundleConfig loads bundle.yaml configuration from the given directory
 func LoadBundleConfig(dir string) (*BundleConfig, error) {
-	bundleFile := filepath.Join(dir, "bundle.yaml")
+	bundleFile := filepath.Join(dir, bundleYamlFile)
 
 	// Check if bundle.yaml exists
 	if _, err := os.Stat(bundleFile); os.IsNotExist(err) {
@@ -131,14 +133,15 @@ func LoadBundleConfig(dir string) (*BundleConfig, error) {
 // Bundle config takes precedence over lake defaults, including explicit disabling
 func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *MergedConfig {
 	merged := &MergedConfig{
-		BundleName:       bundleConfig.Name,
-		BundleOwner:      "", // Not used in new format
-		ProtoPackage:     "", // Not used in new format
-		Description:      bundleConfig.Description,
-		Version:          bundleConfig.Version,
-		JavaConfig:       JavaConfig{},
-		PythonConfig:     PythonConfig{},
-		JavaScriptConfig: JavaScriptConfig{},
+		BundleName:            bundleConfig.Name,
+		BundleOwner:           "", // Not used in new format
+		ProtoPackage:          "", // Not used in new format
+		Description:           bundleConfig.Description,
+		Version:               bundleConfig.Version,
+		GenerateDescriptorSet: bundleConfig.Config.GenerateDescriptorSet,
+		JavaConfig:            JavaConfig{},
+		PythonConfig:          PythonConfig{},
+		JavaScriptConfig:      JavaScriptConfig{},
 	}
 
 	// Start with lake defaults
@@ -147,6 +150,7 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 			Enabled:    lakeConfig.Config.LanguageDefaults.Java.Enabled,
 			GroupId:    lakeConfig.Config.LanguageDefaults.Java.GroupId,
 			ArtifactId: "", // Will be set from bundle
+			FatJar:     lakeConfig.Config.LanguageDefaults.Java.FatJar,
 		}
 		merged.PythonConfig = PythonConfig{
 			Enabled:     lakeConfig.Config.LanguageDefaults.Python.Enabled,
@@ -155,6 +159,7 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 		merged.JavaScriptConfig = JavaScriptConfig{
 			Enabled:     lakeConfig.Config.LanguageDefaults.Javascript.Enabled,
 			PackageName: lakeConfig.Config.LanguageDefaults.Javascript.PackageName,
+			ProtoLoader: lakeConfig.Config.LanguageDefaults.Javascript.ProtoLoader,
 		}
 
 		// Log lake defaults for debugging
@@ -177,6 +182,9 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 	if bundleConfig.Config.Languages.Java.ArtifactId != "" {
 		merged.JavaConfig.ArtifactId = bundleConfig.Config.Languages.Java.ArtifactId
 	}
+	if bundleConfig.Config.Languages.Java.FatJar != nil {
+		merged.JavaConfig.FatJar = *bundleConfig.Config.Languages.Java.FatJar
+	}
 
 	// Python configuration
 	if bundleConfig.Config.Languages.Python.Enabled != nil {
@@ -195,6 +203,9 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 	if bundleConfig.Config.Languages.Javascript.PackageName != "" {
 		merged.JavaScriptConfig.PackageName = bundleConfig.Config.Languages.Javascript.PackageName
 	}
+	if bundleConfig.Config.Languages.Javascript.ProtoLoader != nil {
+		merged.JavaScriptConfig.ProtoLoader = *bundleConfig.Config.Languages.Javascript.ProtoLoader
+	}
 
 	// Log final merged configuration for debugging
 	log.Printf("Merged config for bundle %s - Java enabled: %v, GroupId: %s, ArtifactId: %s",
@@ -209,20 +220,22 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 
 // MergedConfig represents the final configuration after merging lake and bundle configs
 type MergedConfig struct {
-	BundleName       string
-	BundleOwner      string
-	ProtoPackage     string
-	Description      string
-	Version          string
-	JavaConfig       JavaConfig
-	PythonConfig     PythonConfig
-	JavaScriptConfig JavaScriptConfig
+	BundleName           string
+	BundleOwner          string
+	ProtoPackage         string
+	Description          string
+	Version              string
+	GenerateDescriptorSet bool
+	JavaConfig           JavaConfig
+	PythonConfig         PythonConfig
+	JavaScriptConfig     JavaScriptConfig
 }
 
 type JavaConfig struct {
 	Enabled    bool
 	GroupId    string
 	ArtifactId string
+	FatJar     bool
 }
 
 type PythonConfig struct {
@@ -233,4 +246,5 @@ type PythonConfig struct {
 type JavaScriptConfig struct {
 	Enabled     bool
 	PackageName string
+	ProtoLoader bool
 }
