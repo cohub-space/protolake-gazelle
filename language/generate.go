@@ -284,6 +284,28 @@ func generateProtoLoaderBundleRules(config *MergedConfig, bundleName string, all
 	return rules
 }
 
+// generateLegacyCleanupRules returns empty rules that signal Gazelle to delete
+// legacy grpc-web JS rules from existing BUILD files (replaced by es_proto_compile).
+func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
+	var empty []*rule.Rule
+	bundleName := config.BundleName
+
+	// Delete legacy js_grpc_library / js_grpc_web_library rules
+	if config.JavaScriptConfig.Enabled {
+		emptyJsGrpc := rule.NewRule("js_grpc_library", fmt.Sprintf("%s_js_grpc_node", bundleName))
+		emptyJsGrpcWeb := rule.NewRule("js_grpc_web_library", fmt.Sprintf("%s_js_grpc_web", bundleName))
+		empty = append(empty, emptyJsGrpc, emptyJsGrpcWeb)
+	}
+
+	// Delete proto_loader rules if no longer enabled
+	if config.JavaScriptConfig.Enabled && !config.JavaScriptConfig.ProtoLoader {
+		emptyLoader := rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName))
+		empty = append(empty, emptyLoader)
+	}
+
+	return empty
+}
+
 // detectExternalJavaDeps scans proto files in a bundle directory and returns
 // Bazel Java library targets needed for external proto imports (googleapis, protovalidate).
 func detectExternalJavaDeps(bundleDir string) []string {
