@@ -59,7 +59,6 @@ bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_proto_grpc", version = "5.8.0")
 bazel_dep(name = "rules_proto_grpc_java", version = "5.8.0")
 bazel_dep(name = "rules_proto_grpc_python", version = "5.8.0")
-bazel_dep(name = "rules_proto_grpc_js", version = "5.8.0")
 `)
 
 	// Root BUILD.bazel
@@ -95,11 +94,15 @@ gazelle(name = "gazelle")
 def py_proto_bundle(name, proto_deps=[], py_deps=[], py_grpc_deps=[], package_name="", **kwargs):
     native.filegroup(name = name, srcs = py_deps + py_grpc_deps + proto_deps, visibility = kwargs.get("visibility", []))
 
-def js_proto_bundle(name, proto_deps=[], js_deps=[], js_grpc_web_deps=[], package_name="", **kwargs):
-    native.filegroup(name = name, srcs = js_deps + js_grpc_web_deps + proto_deps, visibility = kwargs.get("visibility", []))
+def js_proto_bundle(name, proto_deps=[], es_deps=[], package_name="", **kwargs):
+    native.filegroup(name = name, srcs = es_deps + proto_deps, visibility = kwargs.get("visibility", []))
 
 def build_validation(name, targets=[], **kwargs):
     native.genrule(name = name, outs = [name + ".validation"], cmd = "echo 'Build validation passed' > $@", **kwargs)
+`)
+
+	writeFile(t, toolsDir, "es_proto.bzl", `def es_proto_compile(**kwargs):
+    native.filegroup(name = kwargs.get("name"), srcs = kwargs.get("protos", []), visibility = kwargs.get("visibility", []))
 `)
 
 	writeFile(t, toolsDir, "BUILD.bazel", `exports_files(["proto_bundle.bzl"])
@@ -341,11 +344,10 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, "js_proto_bundle", "js_proto_bundle rule")
 	requireContains(t, content, `package_name = "@testcompany/user-service-proto"`, "JS package_name")
 
-	// gRPC rules
+	// gRPC / codegen rules
 	requireContains(t, content, "java_grpc_library", "java_grpc_library")
 	requireContains(t, content, "python_grpc_library", "python_grpc_library")
-	requireContains(t, content, "js_grpc_library", "js_grpc_library")
-	requireContains(t, content, "js_grpc_web_library", "js_grpc_web_library")
+	requireContains(t, content, "es_proto_compile", "es_proto_compile")
 
 	// Aggregated proto rule
 	requireContains(t, content, "_all_protos", "aggregated proto rule")
@@ -383,8 +385,7 @@ func verifyCommonBundle(t *testing.T, content string) {
 
 	// JavaScript must NOT be generated (explicitly disabled in bundle.yaml)
 	requireAbsent(t, content, "js_proto_bundle", "js_proto_bundle (JS disabled)")
-	requireAbsent(t, content, "js_grpc_library", "js_grpc_library (JS disabled)")
-	requireAbsent(t, content, "js_grpc_web_library", "js_grpc_web_library (JS disabled)")
+	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled)")
 	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
 
 	// Publishing rules for maven and pypi only

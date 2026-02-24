@@ -284,10 +284,14 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 		},
 		"js_proto_bundle": {
 			NonEmptyAttrs: map[string]bool{
-				"package_name":     true,
-				"proto_deps":       true,
-				"js_deps":          true,
-				"js_grpc_web_deps": true,
+				"package_name": true,
+				"proto_deps":   true,
+				"es_deps":      true,
+			},
+		},
+		"es_proto_compile": {
+			NonEmptyAttrs: map[string]bool{
+				"protos": true,
 			},
 		},
 		"proto_descriptor_set": {
@@ -325,8 +329,8 @@ func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 			Symbols: []string{"python_grpc_library"},
 		},
 		{
-			Name:    "@rules_proto_grpc_js//:defs.bzl",
-			Symbols: []string{"js_grpc_library", "js_grpc_web_library"},
+			Name:    "//tools:es_proto.bzl",
+			Symbols: []string{"es_proto_compile"},
 		},
 		{
 			Name:    "//tools:proto_bundle.bzl",
