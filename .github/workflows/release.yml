@@ -50,11 +50,11 @@ jobs:
             Add to your `MODULE.bazel`:
             ```starlark
             bazel_dep(name = "protolake_gazelle", version = "0.0.1")
-            
+
             git_override(
                 module_name = "protolake_gazelle",
                 remote = "https://github.com/cohub-space/protolake-gazelle.git",
-                commit = "${{ github.sha }}",
+                tag = "${{ github.event.inputs.version }}",
             )
             ```
             
