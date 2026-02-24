@@ -200,28 +200,20 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 	return rules
 }
 
-// generateJavaScriptBundleRules creates JavaScript bundle rules with hybrid publishing
+// generateJavaScriptBundleRules creates JavaScript bundle rules with Connect-ES and hybrid publishing
 func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
 	var rules []*rule.Rule
 
-	// JavaScript gRPC library for Node.js
-	jsGrpcNodeRule := rule.NewRule("js_grpc_library", fmt.Sprintf("%s_js_grpc_node", bundleName))
-	jsGrpcNodeRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
-	jsGrpcNodeRule.SetAttr("visibility", []string{"//visibility:public"})
-	rules = append(rules, jsGrpcNodeRule)
+	// Connect-ES compilation (protoc-gen-es) — generates _pb.js + _pb.d.ts
+	esProtoRule := rule.NewRule("es_proto_compile", fmt.Sprintf("%s_es_proto", bundleName))
+	esProtoRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
+	esProtoRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, esProtoRule)
 
-	// JavaScript gRPC-Web library for Browser
-	jsGrpcWebRule := rule.NewRule("js_grpc_web_library", fmt.Sprintf("%s_js_grpc_web", bundleName))
-	jsGrpcWebRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
-	jsGrpcWebRule.SetAttr("visibility", []string{"//visibility:public"})
-	rules = append(rules, jsGrpcWebRule)
-
-	// JavaScript bundle rule with STATIC configuration (no version attribute)
-	// The unified rule handles environment variables internally
+	// JavaScript bundle rule with Connect-ES deps
 	jsBundleRule := rule.NewRule("js_proto_bundle", fmt.Sprintf("%s_js_bundle", bundleName))
 	jsBundleRule.SetAttr("proto_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_all_protos", bundleName)}})
-	jsBundleRule.SetAttr("js_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_js_grpc_node", bundleName)}})
-	jsBundleRule.SetAttr("js_grpc_web_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_js_grpc_web", bundleName)}})
+	jsBundleRule.SetAttr("es_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_es_proto", bundleName)}})
 	// Static package name from configuration
 	jsBundleRule.SetAttr("package_name", config.JavaScriptConfig.PackageName)
 	// NOTE: NO version attribute - unified rule reads from environment variable
@@ -233,8 +225,6 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	publishNpmRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_js_bundle", bundleName)}})
 	publishNpmRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_npm.log"}})
 	// Command with environment variable expansion
-	// NPM publisher expects bundle path and coordinates file as positional args
-	// Create coordinates file inline since we can't access output groups in genrule
 	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > %s_coords.txt && "+
 		"$(location //tools:publish_to_npm) "+
 		"$(location :%s_js_bundle) %s_coords.txt "+

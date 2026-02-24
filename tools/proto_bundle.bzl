@@ -75,31 +75,31 @@ def py_proto_bundle(name, proto_deps=[], py_deps=[], py_grpc_deps=[], package_na
         **kwargs
     )
 
-def js_proto_bundle(name, proto_deps=[], js_deps=[], js_grpc_web_deps=[], package_name="", **kwargs):
+def js_proto_bundle(name, proto_deps=[], es_deps=[], package_name="", **kwargs):
     """JavaScript proto bundle that reads version from environment"""
-    
+
     native.genrule(
         name = name,
-        srcs = js_deps + js_grpc_web_deps + proto_deps,
+        srcs = es_deps + proto_deps,
         outs = [name + ".tgz"],
         cmd = """
         # Create package structure
         mkdir -p package_contents
-        
-        # Copy JavaScript files
+
+        # Copy ES files
         for src in $(SRCS); do
-            if [[ $$src == *.js ]]; then
+            if [[ $$src == *.js ]] || [[ $$src == *.d.ts ]]; then
                 cp $$src package_contents/
             fi
         done
-        
+
         # Copy proto sources
         for src in $(SRCS); do
             if [[ $$src == *.proto ]]; then
                 cp $$src package_contents/
             fi
         done
-        
+
         # Create minimal package (just touch the file for testing)
         touch $(location %s.tgz)
         echo "Created NPM package for %s version $${VERSION:-1.0.0}" > package_contents/info.txt
