@@ -153,8 +153,12 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 		imports[i] = nil
 	}
 
+	// Signal deletion of legacy rules replaced by Connect-ES migration
+	emptyRules := generateLegacyCleanupRules(mergedConfig)
+
 	return language.GenerateResult{
 		Gen:     gen,
+		Empty:   emptyRules,
 		Imports: imports,
 	}
 }
@@ -310,6 +314,19 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"targets": true,
 			},
 		},
+		// Legacy rule kinds — kept in KindInfo so Gazelle can delete them
+		// during merge when they appear in GenerateResult.Empty.
+		// These were replaced by es_proto_compile in the Connect-ES migration.
+		"js_grpc_library": {
+			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+		},
+		"js_grpc_web_library": {
+			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+		},
 	}
 }
 
@@ -335,6 +352,11 @@ func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 		{
 			Name:    "//tools:proto_bundle.bzl",
 			Symbols: []string{"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},
+		},
+		// Legacy load — kept so Gazelle can remove it when no rules reference these symbols
+		{
+			Name:    "@rules_proto_grpc_js//:defs.bzl",
+			Symbols: []string{"js_grpc_library", "js_grpc_web_library"},
 		},
 	}
 }
