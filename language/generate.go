@@ -137,6 +137,8 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 		"--artifact-id %s "+
 		"--version \"$${VERSION:-1.0.0}\" "+
 		"--repo \"$${MAVEN_REPO:-file://~/.m2/repository}\" "+
+		"--protobuf-version \"$${PROTOBUF_JAVA_VERSION:-4.33.5}\" "+
+		"--grpc-version \"$${GRPC_VERSION:-1.78.0}\" "+
 		"> $@",
 		bundleName, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
 	publishMavenRule.SetAttr("cmd", publishCmd)
