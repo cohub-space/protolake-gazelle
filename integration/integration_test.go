@@ -192,7 +192,7 @@ proto_library(
 display_name: "Common Types"
 description: "Common shared types"
 bundle_prefix: "com.testcompany"
-version: "1.0.0"
+version: "2.3.0"
 config:
   languages:
     java:
@@ -353,7 +353,8 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, "_all_protos", "aggregated proto rule")
 
 	// Hybrid approach: environment variables in publish genrules
-	requireContains(t, content, "${VERSION:-", "VERSION env var in publish cmd")
+	// Version default must come from bundle.yaml (1.0.0), not be hardcoded
+	requireContains(t, content, "${VERSION:-1.0.0}", "VERSION default from bundle.yaml (1.0.0)")
 	requireContains(t, content, "${MAVEN_REPO:-", "MAVEN_REPO env var in publish cmd")
 	requireContains(t, content, "publish_", "publish genrule")
 
@@ -387,6 +388,10 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireAbsent(t, content, "js_proto_bundle", "js_proto_bundle (JS disabled)")
 	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled)")
 	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
+
+	// Version default must come from bundle.yaml (2.3.0), not hardcoded 1.0.0
+	requireContains(t, content, "${VERSION:-2.3.0}", "VERSION default from bundle.yaml (2.3.0)")
+	requireAbsent(t, content, "${VERSION:-1.0.0}", "VERSION must not use 1.0.0 default (common-types is 2.3.0)")
 
 	// Publishing rules for maven and pypi only
 	requireContains(t, content, "publish_common-types_to_maven", "maven publish rule")
