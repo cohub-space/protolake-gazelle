@@ -135,12 +135,12 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 		"$(location :%s_java_bundle) "+
 		"--group-id %s "+
 		"--artifact-id %s "+
-		"--version \"$${VERSION:-1.0.0}\" "+
+		"--version \"$${VERSION:-%s}\" "+
 		"--repo \"$${MAVEN_REPO:-file://~/.m2/repository}\" "+
 		"--protobuf-version \"$${PROTOBUF_JAVA_VERSION:-4.33.5}\" "+
 		"--grpc-version \"$${GRPC_VERSION:-1.78.0}\" "+
 		"> $@",
-		bundleName, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
+		bundleName, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, config.Version)
 	publishMavenRule.SetAttr("cmd", publishCmd)
 	publishMavenRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_maven"}})
 	rules = append(rules, publishMavenRule)
@@ -185,10 +185,10 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 	publishCmd := fmt.Sprintf("$(location //tools:publish_to_pypi) "+
 		"$(location :%s_py_bundle) "+
 		"--package-name %s "+
-		"--version \"$${VERSION:-1.0.0}\" "+
+		"--version \"$${VERSION:-%s}\" "+
 		"--repo \"$${PYPI_REPO:-file://~/.pypi}\" "+
 		"> $@",
-		bundleName, config.PythonConfig.PackageName)
+		bundleName, config.PythonConfig.PackageName, config.Version)
 	publishPypiRule.SetAttr("cmd", publishCmd)
 	publishPypiRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_pypi"}})
 	rules = append(rules, publishPypiRule)
@@ -227,11 +227,11 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	publishNpmRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_js_bundle", bundleName)}})
 	publishNpmRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_npm.log"}})
 	// Command with environment variable expansion
-	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > %s_coords.txt && "+
+	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-%s}\" > %s_coords.txt && "+
 		"$(location //tools:publish_to_npm) "+
 		"$(location :%s_js_bundle) %s_coords.txt "+
 		"> $@",
-		config.JavaScriptConfig.PackageName, bundleName, bundleName, bundleName)
+		config.JavaScriptConfig.PackageName, config.Version, bundleName, bundleName, bundleName)
 	publishNpmRule.SetAttr("cmd", publishCmd)
 	publishNpmRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_to_npm"}})
 	rules = append(rules, publishNpmRule)
@@ -274,11 +274,11 @@ func generateProtoLoaderBundleRules(config *MergedConfig, bundleName string, all
 	publishProtoLoaderRule := rule.NewRule("genrule", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName))
 	publishProtoLoaderRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_proto_loader_bundle", bundleName)}})
 	publishProtoLoaderRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{"publish_proto_loader_npm.log"}})
-	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-1.0.0}\" > %s_proto_loader_coords.txt && "+
+	publishCmd := fmt.Sprintf("echo '%s@'\"$${VERSION:-%s}\" > %s_proto_loader_coords.txt && "+
 		"$(location //tools:publish_proto_loader_to_npm) "+
 		"$(location :%s_proto_loader_bundle) %s_proto_loader_coords.txt "+
 		"> $@",
-		loaderPkgName, bundleName, bundleName, bundleName)
+		loaderPkgName, config.Version, bundleName, bundleName, bundleName)
 	publishProtoLoaderRule.SetAttr("cmd", publishCmd)
 	publishProtoLoaderRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:publish_proto_loader_to_npm"}})
 	rules = append(rules, publishProtoLoaderRule)
