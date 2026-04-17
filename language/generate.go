@@ -123,6 +123,12 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	if config.JavaConfig.FatJar {
 		javaBundleRule.SetAttr("fat_jar", true)
 	}
+	// When the bundle requests a proto descriptor, wire the descriptor target
+	// into the JAR so it ships at META-INF/proto-descriptors/<bundle>.pb.
+	if config.GenerateDescriptorSet {
+		javaBundleRule.SetAttr("descriptor_pb", fmt.Sprintf(":%s_descriptor", bundleName))
+		javaBundleRule.SetAttr("bundle_name", bundleName)
+	}
 	javaBundleRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, javaBundleRule)
 
