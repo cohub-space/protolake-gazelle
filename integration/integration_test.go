@@ -144,11 +144,15 @@ config:
 	writeFile(t, userDir, "BUILD.bazel", "")
 
 	// api/v1/user.proto — imports common.proto (cross-bundle dependency)
+	// plus google/api/annotations.proto (external dependency — exercises
+	// the multi-language external-deps wiring).
 	writeFile(t, userApiDir, "user.proto", `syntax = "proto3";
 
 package com.testcompany.user.api.v1;
 
 import "com/testcompany/common/types/v1/common.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
 
 service UserService {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
@@ -181,7 +185,11 @@ message CreateUserResponse {
 proto_library(
     name = "user_proto",
     srcs = ["user.proto"],
-    deps = ["//com/testcompany/common/types/v1:common_proto"],
+    deps = [
+        "//com/testcompany/common/types/v1:common_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:field_behavior_proto",
+    ],
     visibility = ["//visibility:public"],
 )
 `)
@@ -383,6 +391,21 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, `name = "user-service_descriptor"`, "descriptor target name")
 	requireContains(t, content, `descriptor_pb = ":user-service_descriptor"`, "java bundle wires descriptor_pb")
 	requireContains(t, content, `bundle_name = "user-service"`, "java bundle sets bundle_name")
+
+	// External deps: user.proto imports google/api/annotations.proto, so:
+	//   - java_grpc_library.deps must include the Java umbrella library
+	//   - python_grpc_library.protos must include the raw proto_library targets
+	//   - es_proto_compile.protos must include the raw proto_library targets
+	requireContains(t, content, `"@googleapis//google/api:api_java_proto"`,
+		"java_grpc_library deps include googleapis java umbrella")
+	requireContains(t, content, `"@googleapis//google/api:annotations_proto"`,
+		"python_grpc_library + es_proto_compile protos include annotations_proto")
+	requireContains(t, content, `"@googleapis//google/api:field_behavior_proto"`,
+		"protos include field_behavior_proto")
+	requireContains(t, content, `"@googleapis//google/api:http_proto"`,
+		"protos include http_proto (transitive companion)")
+	requireContains(t, content, `"@googleapis//google/api:launch_stage_proto"`,
+		"protos include launch_stage_proto (pulled in by client.proto)")
 }
 
 // verifyCommonBundle checks the common-types bundle BUILD file.
@@ -419,6 +442,10 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireAbsent(t, content, "proto_descriptor_set(", "proto_descriptor_set rule (not requested)")
 	requireAbsent(t, content, "descriptor_pb =", "descriptor_pb attribute (not requested)")
 	requireAbsent(t, content, "bundle_name =", "bundle_name attribute (not requested)")
+
+	// common-types doesn't import google/api, so no external deps should appear.
+	requireAbsent(t, content, "@googleapis//", "googleapis deps (not imported)")
+	requireAbsent(t, content, "api_java_proto", "Java umbrella dep (not imported)")
 }
 
 // verifySubdirectoryTargets checks that proto files in subdirectories
