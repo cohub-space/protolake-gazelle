@@ -99,6 +99,9 @@ def js_proto_bundle(name, proto_deps=[], es_deps=[], package_name="", **kwargs):
 
 def build_validation(name, targets=[], **kwargs):
     native.genrule(name = name, outs = [name + ".validation"], cmd = "echo 'Build validation passed' > $@", **kwargs)
+
+def proto_descriptor_set(name, deps=[], **kwargs):
+    native.filegroup(name = name, srcs = deps, visibility = kwargs.get("visibility", []))
 `)
 
 	writeFile(t, toolsDir, "es_proto.bzl", `def es_proto_compile(**kwargs):
@@ -123,6 +126,7 @@ description: "User service proto definitions"
 bundle_prefix: "com.testcompany"
 version: "1.0.0"
 config:
+  generate_descriptor_set: true
   languages:
     java:
       enabled: true
@@ -372,6 +376,13 @@ func verifyUserBundle(t *testing.T, content string) {
 	// Cross-bundle dependency: user.proto imports common.proto, so the
 	// generated gRPC rules should reference the common types target.
 	requireContains(t, content, "//com/testcompany/common/types/v1:", "cross-bundle proto target reference")
+
+	// Descriptor set is enabled for user-service: expect proto_descriptor_set rule
+	// and the java_proto_bundle wired to receive it via descriptor_pb/bundle_name.
+	requireContains(t, content, "proto_descriptor_set(", "proto_descriptor_set rule")
+	requireContains(t, content, `name = "user-service_descriptor"`, "descriptor target name")
+	requireContains(t, content, `descriptor_pb = ":user-service_descriptor"`, "java bundle wires descriptor_pb")
+	requireContains(t, content, `bundle_name = "user-service"`, "java bundle sets bundle_name")
 }
 
 // verifyCommonBundle checks the common-types bundle BUILD file.
@@ -402,6 +413,12 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireContains(t, content, "common-types_java_bundle", "java target in build_validation")
 	requireContains(t, content, "common-types_py_bundle", "python target in build_validation")
 	requireAbsent(t, content, "common-types_js_bundle", "js target in build_validation (JS disabled)")
+
+	// Descriptor set NOT enabled for common-types: rule must be absent and
+	// java_proto_bundle must not carry the descriptor attributes.
+	requireAbsent(t, content, "proto_descriptor_set(", "proto_descriptor_set rule (not requested)")
+	requireAbsent(t, content, "descriptor_pb =", "descriptor_pb attribute (not requested)")
+	requireAbsent(t, content, "bundle_name =", "bundle_name attribute (not requested)")
 }
 
 // verifySubdirectoryTargets checks that proto files in subdirectories
