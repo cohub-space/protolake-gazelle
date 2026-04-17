@@ -35,14 +35,17 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	log.Printf("Bundle %s has %d direct proto targets and %d total with transitive deps",
 		bundleName, len(protoTargets), len(allProtoTargets))
 
-	// Detect external proto imports to determine additional Java dependencies
-	externalJavaDeps := detectExternalJavaDeps(bundleDir)
+	// Detect external proto imports and derive per-language Bazel targets. Java
+	// depends on a pre-compiled umbrella library (googleapis-java); Python and JS
+	// have no such umbrella today, so they compile the external proto_library
+	// targets directly alongside the bundle's own protos.
+	externalDeps := detectExternalProtoImports(bundleDir)
 
 	// Generate Java bundle if enabled
 	log.Printf("Checking Java bundle generation - Enabled: %v, GroupId: '%s', ArtifactId: '%s'",
 		config.JavaConfig.Enabled, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
 	if config.JavaConfig.Enabled && config.JavaConfig.GroupId != "" && config.JavaConfig.ArtifactId != "" {
-		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalJavaDeps)...)
+		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalDeps.Java)...)
 	} else {
 		log.Printf("Skipping Java bundle generation for %s", bundleName)
 	}
@@ -51,7 +54,7 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	log.Printf("Checking Python bundle generation - Enabled: %v, PackageName: '%s'",
 		config.PythonConfig.Enabled, config.PythonConfig.PackageName)
 	if config.PythonConfig.Enabled && config.PythonConfig.PackageName != "" {
-		rules = append(rules, generatePythonBundleRules(config, bundleName, allProtoTargets)...)
+		rules = append(rules, generatePythonBundleRules(config, bundleName, allProtoTargets, externalDeps.ProtoLibraries)...)
 	} else {
 		log.Printf("Skipping Python bundle generation for %s", bundleName)
 	}
@@ -60,7 +63,7 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	log.Printf("Checking JavaScript bundle generation - Enabled: %v, PackageName: '%s'",
 		config.JavaScriptConfig.Enabled, config.JavaScriptConfig.PackageName)
 	if config.JavaScriptConfig.Enabled && config.JavaScriptConfig.PackageName != "" {
-		rules = append(rules, generateJavaScriptBundleRules(config, bundleName, allProtoTargets)...)
+		rules = append(rules, generateJavaScriptBundleRules(config, bundleName, allProtoTargets, externalDeps.ProtoLibraries)...)
 	} else {
 		log.Printf("Skipping JavaScript bundle generation for %s", bundleName)
 	}
@@ -161,13 +164,23 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 }
 
 // generatePythonBundleRules creates Python bundle rules with hybrid publishing
-func generatePythonBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
+func generatePythonBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string, externalProtoLibraries []string) []*rule.Rule {
 	var rules []*rule.Rule
 
-	// Python gRPC library (includes both proto messages and gRPC stubs)
+	// Python gRPC library (includes both proto messages and gRPC stubs).
+	// External proto_library targets (e.g. @googleapis//google/api:annotations_proto)
+	// are appended to `protos` so rules_proto_grpc_python compiles them alongside
+	// the bundle's own protos — without this the published wheel would be missing
+	// google/api/*_pb2.py companions.
 	pythonGrpcRule := rule.NewRule("python_grpc_library", fmt.Sprintf("%s_python_grpc", bundleName))
-	pythonGrpcRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
+	protos := append([]string{}, allProtoTargets...)
+	protos = append(protos, externalProtoLibraries...)
+	pythonGrpcRule.SetAttr("protos", rule.PlatformStrings{Generic: protos})
 	pythonGrpcRule.SetAttr("visibility", []string{"//visibility:public"})
+	if len(externalProtoLibraries) > 0 {
+		log.Printf("Added %d external proto_library targets to %s_python_grpc: %v",
+			len(externalProtoLibraries), bundleName, externalProtoLibraries)
+	}
 	rules = append(rules, pythonGrpcRule)
 
 	// Python bundle rule with STATIC configuration (no version attribute)
@@ -209,13 +222,23 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 }
 
 // generateJavaScriptBundleRules creates JavaScript bundle rules with Connect-ES and hybrid publishing
-func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
+func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string, externalProtoLibraries []string) []*rule.Rule {
 	var rules []*rule.Rule
 
-	// Connect-ES compilation (protoc-gen-es) — generates _pb.js + _pb.d.ts
+	// Connect-ES compilation (protoc-gen-es) — generates _pb.js + _pb.d.ts.
+	// External proto_library targets (e.g. @googleapis//google/api:annotations_proto)
+	// are appended to `protos` so protoc-gen-es produces _pb.js for them too —
+	// without this the generated authz_pb.js would reference missing
+	// ../../../google/api/*_pb imports and the consumer's build would fail.
 	esProtoRule := rule.NewRule("es_proto_compile", fmt.Sprintf("%s_es_proto", bundleName))
-	esProtoRule.SetAttr("protos", rule.PlatformStrings{Generic: allProtoTargets})
+	protos := append([]string{}, allProtoTargets...)
+	protos = append(protos, externalProtoLibraries...)
+	esProtoRule.SetAttr("protos", rule.PlatformStrings{Generic: protos})
 	esProtoRule.SetAttr("visibility", []string{"//visibility:public"})
+	if len(externalProtoLibraries) > 0 {
+		log.Printf("Added %d external proto_library targets to %s_es_proto: %v",
+			len(externalProtoLibraries), bundleName, externalProtoLibraries)
+	}
 	rules = append(rules, esProtoRule)
 
 	// JavaScript bundle rule with Connect-ES deps
@@ -314,9 +337,42 @@ func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 	return empty
 }
 
-// detectExternalJavaDeps scans proto files in a bundle directory and returns
-// Bazel Java library targets needed for external proto imports (googleapis, protovalidate).
-func detectExternalJavaDeps(bundleDir string) []string {
+// ExternalProtoDeps carries the Bazel targets that need to be wired into per-language
+// rules when a bundle's protos import external sources (googleapis, protovalidate).
+//
+//   - Java uses pre-compiled umbrella library targets (e.g. api_java_proto) — these are
+//     passed to `java_grpc_library.deps` so the JAR depends on already-built classes.
+//   - Python and JS have no umbrella equivalent in this workspace, so the raw
+//     proto_library targets are compiled alongside the bundle's own protos by
+//     appending them to the `protos` attribute of `python_grpc_library` and
+//     `es_proto_compile`. This produces the matching _pb2.py / _pb.js companions
+//     inside the published wheel / npm tarball.
+type ExternalProtoDeps struct {
+	// Java target list (umbrella libraries, typically one entry per provider).
+	Java []string
+	// Raw proto_library targets, used by Python and JS which recompile per-bundle.
+	ProtoLibraries []string
+}
+
+// googleapisJsProtos is the set of google/api protos our consumers transitively need
+// when any google/api/*.proto is imported. protoc compiles only the srcs of each
+// listed proto_library (not their transitive imports), so we include the whole set
+// rather than trying to resolve each import graph precisely. launch_stage is
+// pulled in by client.proto; the remaining ones cover the annotations we see
+// across cohub bundles today. This is a small set and the extra _pb.js files
+// are negligible in the published tarball.
+var googleapisJsProtos = []string{
+	"@googleapis//google/api:annotations_proto",
+	"@googleapis//google/api:client_proto",
+	"@googleapis//google/api:field_behavior_proto",
+	"@googleapis//google/api:http_proto",
+	"@googleapis//google/api:launch_stage_proto",
+	"@googleapis//google/api:resource_proto",
+}
+
+// detectExternalProtoImports scans a bundle's .proto files and returns the per-language
+// Bazel targets required to satisfy external imports (googleapis, protovalidate).
+func detectExternalProtoImports(bundleDir string) ExternalProtoDeps {
 	needsGoogleapis := false
 	needsProtovalidate := false
 
@@ -338,14 +394,18 @@ func detectExternalJavaDeps(bundleDir string) []string {
 		}
 	}
 
-	var deps []string
+	var out ExternalProtoDeps
 	if needsGoogleapis {
-		deps = append(deps, "@googleapis//google/api:api_java_proto")
+		out.Java = append(out.Java, "@googleapis//google/api:api_java_proto")
+		out.ProtoLibraries = append(out.ProtoLibraries, googleapisJsProtos...)
 	}
 	if needsProtovalidate {
-		deps = append(deps, "//:protovalidate_java_proto")
+		out.Java = append(out.Java, "//:protovalidate_java_proto")
+		// Raw proto_library lives under the module's proto/ subtree — see the lake's
+		// `protovalidate_java_proto` target for the canonical path.
+		out.ProtoLibraries = append(out.ProtoLibraries, "@protovalidate//proto/protovalidate/buf/validate:validate_proto")
 	}
-	return deps
+	return out
 }
 
 // collectBundleTransitiveDependencies finds transitive dependencies for a specific bundle

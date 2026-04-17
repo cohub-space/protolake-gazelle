@@ -297,6 +297,38 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 			NonEmptyAttrs: map[string]bool{
 				"protos": true,
 			},
+			// MergeableAttrs lets Gazelle overwrite these attributes on existing rules
+			// during a regenerate pass. Without this, changes to external proto deps
+			// (added by detectExternalProtoImports for google/api, buf/validate, etc.)
+			// would not propagate into checked-in BUILD.bazel files.
+			MergeableAttrs: map[string]bool{
+				"protos":     true,
+				"visibility": true,
+			},
+		},
+		// java_grpc_library + python_grpc_library live in @rules_proto_grpc_{java,python}
+		// but we generate them from this extension and want to merge our attrs into
+		// existing checked-in rules. Register KindInfo so Gazelle knows to merge
+		// `protos` and `deps` (external proto deps added by detectExternalProtoImports).
+		"java_grpc_library": {
+			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+			MergeableAttrs: map[string]bool{
+				"protos":     true,
+				"deps":       true,
+				"visibility": true,
+			},
+		},
+		"python_grpc_library": {
+			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+			MergeableAttrs: map[string]bool{
+				"protos":     true,
+				"deps":       true,
+				"visibility": true,
+			},
 		},
 		"proto_descriptor_set": {
 			NonEmptyAttrs: map[string]bool{
