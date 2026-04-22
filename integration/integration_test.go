@@ -144,8 +144,8 @@ config:
 	writeFile(t, userDir, "BUILD.bazel", "")
 
 	// api/v1/user.proto — imports common.proto (cross-bundle dependency)
-	// plus google/api/annotations.proto (external dependency — exercises
-	// the multi-language external-deps wiring).
+	// plus google/api/annotations.proto and google/longrunning/operations.proto
+	// (external dependencies — exercises the multi-language external-deps wiring).
 	writeFile(t, userApiDir, "user.proto", `syntax = "proto3";
 
 package com.testcompany.user.api.v1;
@@ -153,10 +153,12 @@ package com.testcompany.user.api.v1;
 import "com/testcompany/common/types/v1/common.proto";
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
+import "google/longrunning/operations.proto";
 
 service UserService {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc CreateUserAsync(CreateUserRequest) returns (google.longrunning.Operation);
 }
 
 message GetUserRequest {
@@ -189,6 +191,7 @@ proto_library(
         "//com/testcompany/common/types/v1:common_proto",
         "@googleapis//google/api:annotations_proto",
         "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/longrunning:operations_proto",
     ],
     visibility = ["//visibility:public"],
 )
@@ -392,8 +395,9 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, `descriptor_pb = ":user-service_descriptor"`, "java bundle wires descriptor_pb")
 	requireContains(t, content, `bundle_name = "user-service"`, "java bundle sets bundle_name")
 
-	// External deps: user.proto imports google/api/annotations.proto, so:
-	//   - java_grpc_library.deps must include the Java umbrella library
+	// External deps: user.proto imports google/api/annotations.proto and
+	// google/longrunning/operations.proto, so:
+	//   - java_grpc_library.deps must include the Java umbrella libraries
 	//   - python_grpc_library.protos must include the raw proto_library targets
 	//   - es_proto_compile.protos must include the raw proto_library targets
 	requireContains(t, content, `"@googleapis//google/api:api_java_proto"`,
@@ -406,6 +410,10 @@ func verifyUserBundle(t *testing.T, content string) {
 		"protos include http_proto (transitive companion)")
 	requireContains(t, content, `"@googleapis//google/api:launch_stage_proto"`,
 		"protos include launch_stage_proto (pulled in by client.proto)")
+	requireContains(t, content, `"@googleapis//google/longrunning:longrunning_java_proto"`,
+		"java_grpc_library deps include longrunning java umbrella")
+	requireContains(t, content, `"@googleapis//google/longrunning:operations_proto"`,
+		"python_grpc_library + es_proto_compile protos include longrunning operations_proto")
 }
 
 // verifyCommonBundle checks the common-types bundle BUILD file.

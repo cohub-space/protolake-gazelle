@@ -371,9 +371,11 @@ var googleapisJsProtos = []string{
 }
 
 // detectExternalProtoImports scans a bundle's .proto files and returns the per-language
-// Bazel targets required to satisfy external imports (googleapis, protovalidate).
+// Bazel targets required to satisfy external imports (googleapis, longrunning,
+// protovalidate).
 func detectExternalProtoImports(bundleDir string) ExternalProtoDeps {
 	needsGoogleapis := false
+	needsLongrunning := false
 	needsProtovalidate := false
 
 	protoFiles := collectBundleProtoFiles(bundleDir)
@@ -388,6 +390,9 @@ func detectExternalProtoImports(bundleDir string) ExternalProtoDeps {
 			if strings.HasPrefix(importPath, "google/api/") {
 				needsGoogleapis = true
 			}
+			if strings.HasPrefix(importPath, "google/longrunning/") {
+				needsLongrunning = true
+			}
 			if strings.HasPrefix(importPath, "buf/validate/") {
 				needsProtovalidate = true
 			}
@@ -398,6 +403,13 @@ func detectExternalProtoImports(bundleDir string) ExternalProtoDeps {
 	if needsGoogleapis {
 		out.Java = append(out.Java, "@googleapis//google/api:api_java_proto")
 		out.ProtoLibraries = append(out.ProtoLibraries, googleapisJsProtos...)
+	}
+	if needsLongrunning {
+		// Java umbrella target aggregates longrunning message + gRPC classes.
+		out.Java = append(out.Java, "@googleapis//google/longrunning:longrunning_java_proto")
+		// Python/JS recompile raw proto_library targets per-bundle — operations.proto
+		// is the only file under google/longrunning and carries everything callers need.
+		out.ProtoLibraries = append(out.ProtoLibraries, "@googleapis//google/longrunning:operations_proto")
 	}
 	if needsProtovalidate {
 		out.Java = append(out.Java, "//:protovalidate_java_proto")
