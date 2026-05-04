@@ -50,7 +50,14 @@ func TestKindsAndKindInfo(t *testing.T) {
 
 	// Test Kinds method
 	kinds := ext.Kinds()
-	expectedKinds := []string{"java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "es_proto_compile", "proto_descriptor_set", "js_proto_loader_bundle", "build_validation", "js_grpc_library", "js_grpc_web_library"}
+	expectedKinds := []string{
+		"java_proto_bundle", "py_proto_bundle", "js_proto_bundle",
+		"es_proto_compile", "proto_descriptor_set", "js_proto_loader_bundle",
+		"build_validation",
+		"maven_publish", "py_binary",
+		"js_grpc_library", "js_grpc_web_library",
+		"genrule",
+	}
 
 	for _, expectedKind := range expectedKinds {
 		if _, exists := kinds[expectedKind]; !exists {
@@ -75,6 +82,28 @@ func TestKindsAndKindInfo(t *testing.T) {
 	} else {
 		t.Error("java_proto_bundle kind info not found")
 	}
+
+	// Verify maven_publish has the load-bearing attrs.
+	if mavenInfo, exists := kindInfo["maven_publish"]; exists {
+		for _, attr := range []string{"coordinates", "artifact"} {
+			if !mavenInfo.NonEmptyAttrs[attr] {
+				t.Errorf("maven_publish should have required attribute '%s'", attr)
+			}
+		}
+	} else {
+		t.Error("maven_publish kind info not found")
+	}
+
+	// Verify py_binary has srcs+main as required.
+	if pyBinInfo, exists := kindInfo["py_binary"]; exists {
+		for _, attr := range []string{"srcs", "main"} {
+			if !pyBinInfo.NonEmptyAttrs[attr] {
+				t.Errorf("py_binary should have required attribute '%s'", attr)
+			}
+		}
+	} else {
+		t.Error("py_binary kind info not found")
+	}
 }
 
 func TestLoads(t *testing.T) {
@@ -86,6 +115,8 @@ func TestLoads(t *testing.T) {
 		"@rules_proto//proto:defs.bzl":        {"proto_library"},
 		"@rules_proto_grpc_java//:defs.bzl":   {"java_grpc_library"},
 		"@rules_proto_grpc_python//:defs.bzl": {"python_grpc_library"},
+		"@rules_jvm_external//private/rules:maven_publish.bzl": {"maven_publish"},
+		"@rules_python//python:defs.bzl":      {"py_binary"},
 		"//tools:es_proto.bzl":                {"es_proto_compile"},
 		"//tools:proto_bundle.bzl":            {"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},
 		"@rules_proto_grpc_js//:defs.bzl":     {"js_grpc_library", "js_grpc_web_library"},
