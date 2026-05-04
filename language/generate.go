@@ -22,6 +22,17 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	var rules []*rule.Rule
 	bundleName := config.BundleName
 
+	// Fail fast if version is missing. Defaulting to "1.0.0" silently masked the
+	// "bundle.yaml bumped but publish stuck at 1.0.0" failure mode for months —
+	// see PL-c4d8 / cohub-protolake#30 incident notes. Better to break the build
+	// loudly so the missing version is fixed at its source.
+	if config.Version == "" {
+		log.Fatalf("[protolake-gazelle] bundle %q at %s is missing required field "+
+			"`version` in bundle.yaml. Set an explicit version (e.g. `version: \"1.0.0\"`); "+
+			"omitting it would publish under a fallback that drifts silently.",
+			bundleName, rel)
+	}
+
 	// Create aggregated proto_library rule (for reference and compatibility)
 	allProtosRule := rule.NewRule("proto_library", fmt.Sprintf("%s_all_protos", bundleName))
 	allProtosRule.SetAttr("deps", rule.PlatformStrings{Generic: protoTargets})
@@ -118,13 +129,9 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	javaGrpcRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, javaGrpcRule)
 
-	// Version literal baked from bundle.yaml. Empty defaults to "1.0.0" so a
-	// bundle that forgets to set version still produces a valid coordinate
-	// (preserves the previous fallback behavior).
+	// Version literal baked from bundle.yaml. generateBundleRules already
+	// fail-fasts if config.Version is empty, so no fallback needed here.
 	version := config.Version
-	if version == "" {
-		version = "1.0.0"
-	}
 
 	// Java bundle rule. Coordinates come from configuration; the JAR's
 	// MANIFEST.MF carries the version (from `bundle.yaml`). The maven coordinate
@@ -210,10 +217,8 @@ func generatePythonBundleRules(config *MergedConfig, bundleName string, allProto
 	}
 	rules = append(rules, pythonGrpcRule)
 
+	// generateBundleRules already fail-fasts if config.Version is empty.
 	version := config.Version
-	if version == "" {
-		version = "1.0.0"
-	}
 
 	// Python bundle rule. Package name and version come from configuration —
 	// version is passed to wheel_builder via a rule attr, baked at gazelle time.
@@ -275,10 +280,8 @@ func generateJavaScriptBundleRules(config *MergedConfig, bundleName string, allP
 	}
 	rules = append(rules, esProtoRule)
 
+	// generateBundleRules already fail-fasts if config.Version is empty.
 	version := config.Version
-	if version == "" {
-		version = "1.0.0"
-	}
 
 	// JavaScript bundle rule with Connect-ES deps. Version baked at gazelle time.
 	jsBundleRule := rule.NewRule("js_proto_bundle", fmt.Sprintf("%s_js_bundle", bundleName))
@@ -330,10 +333,8 @@ func generateDescriptorSetRules(config *MergedConfig, bundleName string, protoTa
 func generateProtoLoaderBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string) []*rule.Rule {
 	var rules []*rule.Rule
 
+	// generateBundleRules already fail-fasts if config.Version is empty.
 	version := config.Version
-	if version == "" {
-		version = "1.0.0"
-	}
 
 	// Proto-loader bundle rule
 	protoLoaderRule := rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName))

@@ -277,6 +277,12 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"java_deps":      true,
 				"java_grpc_deps": true,
 			},
+			// `version` must be mergeable so bundle.yaml version bumps
+			// propagate into the existing rule on regenerate. Without this,
+			// jar_bundler keeps stamping the previous version into MANIFEST.MF.
+			MergeableAttrs: map[string]bool{
+				"version": true,
+			},
 		},
 		"py_proto_bundle": {
 			NonEmptyAttrs: map[string]bool{
@@ -399,9 +405,16 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 		// `genrule` is a built-in, but we declare it here so the merger can
 		// identify and delete the legacy `publish_<bundle>_to_*` genrules
 		// (replaced by maven_publish + py_binary in the publisher-execution-model
-		// migration).
+		// migration). `cmd` must be mergeable so version-bearing pom-generator
+		// invocations (e.g. `--version 1.0.0`) get rewritten when bundle.yaml
+		// bumps; without this the published POM XML carries the stale version
+		// while the JAR coordinate is fresh.
 		"genrule": {
 			NonEmptyAttrs: map[string]bool{
+				"cmd":  true,
+				"outs": true,
+			},
+			MergeableAttrs: map[string]bool{
 				"cmd":  true,
 				"outs": true,
 			},
