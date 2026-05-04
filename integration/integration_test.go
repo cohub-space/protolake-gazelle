@@ -383,10 +383,11 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, "user-service_py_bundle", "python target in build_validation")
 	requireContains(t, content, "user-service_js_bundle", "js target in build_validation")
 
-	// No hardcoded version on the bundle rule itself — version lives on the publish rule.
-	if strings.Contains(content, `version = "1.0.0"`) {
-		t.Error("Found hardcoded version on bundle rule — version belongs to maven_publish.coordinates")
-	}
+	// java_proto_bundle, py_proto_bundle, js_proto_bundle each carry a `version`
+	// attr so the bundlers (jar_bundler MANIFEST.MF, wheel_builder PKG-INFO,
+	// npm_bundler package.json) embed it. The maven publish coordinate for the
+	// JAR comes from the sibling maven_publish rule, not from the bundle rule.
+	requireContains(t, content, `version = "1.0.0"`, "version attr baked on bundle rules")
 
 	// Cross-bundle dependency: user.proto imports common.proto, so the
 	// generated gRPC rules should reference the common types target.
