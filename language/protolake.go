@@ -285,12 +285,18 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"py_deps":      true,
 				"py_grpc_deps": true,
 			},
+			MergeableAttrs: map[string]bool{
+				"version": true,
+			},
 		},
 		"js_proto_bundle": {
 			NonEmptyAttrs: map[string]bool{
 				"package_name": true,
 				"proto_deps":   true,
 				"es_deps":      true,
+			},
+			MergeableAttrs: map[string]bool{
+				"version": true,
 			},
 		},
 		"es_proto_compile": {
@@ -308,10 +314,42 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"package_name": true,
 				"proto_deps":   true,
 			},
+			MergeableAttrs: map[string]bool{
+				"version": true,
+			},
 		},
 		"build_validation": {
 			NonEmptyAttrs: map[string]bool{
 				"targets": true,
+			},
+		},
+		// Publish-rule kinds — emitted by generateJavaBundleRules /
+		// generatePythonBundleRules / generateJavaScriptBundleRules /
+		// generateProtoLoaderBundleRules.
+		"maven_publish": {
+			NonEmptyAttrs: map[string]bool{
+				"coordinates": true,
+				"artifact":    true,
+			},
+			MergeableAttrs: map[string]bool{
+				"coordinates": true,
+				"pom":         true,
+				"artifact":    true,
+				"visibility":  true,
+			},
+		},
+		"py_binary": {
+			NonEmptyAttrs: map[string]bool{
+				"srcs": true,
+				"main": true,
+			},
+			MergeableAttrs: map[string]bool{
+				"srcs":       true,
+				"main":       true,
+				"data":       true,
+				"args":       true,
+				"deps":       true,
+				"visibility": true,
 			},
 		},
 		// Legacy rule kinds — kept in KindInfo so Gazelle can delete them
@@ -344,6 +382,14 @@ func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 		{
 			Name:    "@rules_proto_grpc_python//:defs.bzl",
 			Symbols: []string{"python_grpc_library"},
+		},
+		{
+			Name:    "@rules_jvm_external//:defs.bzl",
+			Symbols: []string{"maven_publish"},
+		},
+		{
+			Name:    "@rules_python//python:defs.bzl",
+			Symbols: []string{"py_binary"},
 		},
 		{
 			Name:    "//tools:es_proto.bzl",

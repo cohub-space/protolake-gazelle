@@ -352,11 +352,15 @@ func verifyUserBundle(t *testing.T, content string) {
 	// Aggregated proto rule
 	requireContains(t, content, "_all_protos", "aggregated proto rule")
 
-	// Hybrid approach: environment variables in publish genrules
-	// Version default must come from bundle.yaml (1.0.0), not be hardcoded
-	requireContains(t, content, "${VERSION:-1.0.0}", "VERSION default from bundle.yaml (1.0.0)")
-	requireContains(t, content, "${MAVEN_REPO:-", "MAVEN_REPO env var in publish cmd")
-	requireContains(t, content, "publish_", "publish genrule")
+	// Publish rules — version baked from bundle.yaml (1.0.0). No runtime ${VERSION}.
+	requireContains(t, content, "maven_publish", "maven_publish rule")
+	requireContains(t, content, `coordinates = "com.testcompany.proto:user-service-proto:1.0.0"`,
+		"Maven coordinates baked at gazelle time")
+	requireContains(t, content, `--version=1.0.0`, "Version baked into py_binary args")
+	requireContains(t, content, "publish_user-service_to_maven", "maven publish target")
+	requireContains(t, content, "publish_user-service_to_pypi", "pypi publish target")
+	requireContains(t, content, "publish_user-service_to_npm", "npm publish target")
+	requireAbsent(t, content, "${VERSION:", "no runtime VERSION env-var dance after gazelle bake")
 
 	// build_validation with all 3 language bundle targets
 	requireContains(t, content, "build_validation", "build_validation rule")
@@ -364,9 +368,9 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, "user-service_py_bundle", "python target in build_validation")
 	requireContains(t, content, "user-service_js_bundle", "js target in build_validation")
 
-	// No hardcoded version (hybrid approach)
+	// No hardcoded version on the bundle rule itself — version lives on the publish rule.
 	if strings.Contains(content, `version = "1.0.0"`) {
-		t.Error("Found hardcoded version in bundle rule - violates hybrid approach")
+		t.Error("Found hardcoded version on bundle rule — version belongs to maven_publish.coordinates")
 	}
 
 	// Cross-bundle dependency: user.proto imports common.proto, so the
@@ -389,13 +393,18 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled)")
 	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
 
-	// Version default must come from bundle.yaml (2.3.0), not hardcoded 1.0.0
-	requireContains(t, content, "${VERSION:-2.3.0}", "VERSION default from bundle.yaml (2.3.0)")
-	requireAbsent(t, content, "${VERSION:-1.0.0}", "VERSION must not use 1.0.0 default (common-types is 2.3.0)")
+	// Publish rules — version baked from bundle.yaml (2.3.0).
+	requireContains(t, content, "maven_publish", "maven_publish rule")
+	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0"`,
+		"Maven coordinates baked from bundle.yaml")
+	requireContains(t, content, `--version=2.3.0`, "Version baked into py_binary args")
+	requireContains(t, content, "publish_common-types_to_maven", "maven publish target")
+	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish target")
 
-	// Publishing rules for maven and pypi only
-	requireContains(t, content, "publish_common-types_to_maven", "maven publish rule")
-	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish rule")
+	// Regression check for the version-stuck-at-1.0.0 bug: common-types is 2.3.0
+	// and must never appear with the 1.0.0 fallback.
+	requireAbsent(t, content, `--version=1.0.0`, "no 1.0.0 fallback for common-types (bundle.yaml says 2.3.0)")
+	requireAbsent(t, content, `:common-types-proto:1.0.0`, "no 1.0.0 maven coord for common-types")
 
 	// build_validation with only java and python
 	requireContains(t, content, "build_validation", "build_validation rule")
