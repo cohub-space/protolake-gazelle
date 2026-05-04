@@ -354,7 +354,6 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 		},
 		// Legacy rule kinds — kept in KindInfo so Gazelle can delete them
 		// during merge when they appear in GenerateResult.Empty.
-		// These were replaced by es_proto_compile in the Connect-ES migration.
 		"js_grpc_library": {
 			NonEmptyAttrs: map[string]bool{
 				"protos": true,
@@ -363,6 +362,16 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 		"js_grpc_web_library": {
 			NonEmptyAttrs: map[string]bool{
 				"protos": true,
+			},
+		},
+		// `genrule` is a built-in, but we declare it here so the merger can
+		// identify and delete the legacy `publish_<bundle>_to_*` genrules
+		// (replaced by maven_publish + py_binary in the publisher-execution-model
+		// migration).
+		"genrule": {
+			NonEmptyAttrs: map[string]bool{
+				"cmd":  true,
+				"outs": true,
 			},
 		},
 	}
@@ -384,7 +393,14 @@ func (pe *protolakeExtension) Loads() []rule.LoadInfo {
 			Symbols: []string{"python_grpc_library"},
 		},
 		{
-			Name:    "@rules_jvm_external//:defs.bzl",
+			// `maven_publish` lives in rules_jvm_external's private/rules/.
+			// As of 6.10, the public `defs.bzl` re-exports `java_export` (which
+			// builds the JAR and creates a publish target as a side-effect)
+			// but NOT the standalone `maven_publish` rule. Since we already
+			// have the JAR (built by `java_proto_bundle`), we use the private
+			// path directly. This is the documented workaround in
+			// rules_jvm_external's tracking issue for "publish an existing JAR".
+			Name:    "@rules_jvm_external//private/rules:maven_publish.bzl",
 			Symbols: []string{"maven_publish"},
 		},
 		{

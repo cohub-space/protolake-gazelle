@@ -56,6 +56,7 @@ func TestKindsAndKindInfo(t *testing.T) {
 		"build_validation",
 		"maven_publish", "py_binary",
 		"js_grpc_library", "js_grpc_web_library",
+		"genrule",
 	}
 
 	for _, expectedKind := range expectedKinds {
@@ -114,7 +115,7 @@ func TestLoads(t *testing.T) {
 		"@rules_proto//proto:defs.bzl":        {"proto_library"},
 		"@rules_proto_grpc_java//:defs.bzl":   {"java_grpc_library"},
 		"@rules_proto_grpc_python//:defs.bzl": {"python_grpc_library"},
-		"@rules_jvm_external//:defs.bzl":      {"maven_publish"},
+		"@rules_jvm_external//private/rules:maven_publish.bzl": {"maven_publish"},
 		"@rules_python//python:defs.bzl":      {"py_binary"},
 		"//tools:es_proto.bzl":                {"es_proto_compile"},
 		"//tools:proto_bundle.bzl":            {"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},

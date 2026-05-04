@@ -115,20 +115,6 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	javaGrpcRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, javaGrpcRule)
 
-	// Java bundle rule. Coordinates come from configuration; the JAR itself doesn't
-	// carry a version (maven_publish supplies that at publish time via `coordinates`).
-	javaBundleRule := rule.NewRule("java_proto_bundle", fmt.Sprintf("%s_java_bundle", bundleName))
-	javaBundleRule.SetAttr("proto_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_all_protos", bundleName)}})
-	javaBundleRule.SetAttr("java_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_java_grpc", bundleName)}})
-	javaBundleRule.SetAttr("java_grpc_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_java_grpc", bundleName)}})
-	javaBundleRule.SetAttr("group_id", config.JavaConfig.GroupId)
-	javaBundleRule.SetAttr("artifact_id", config.JavaConfig.ArtifactId)
-	if config.JavaConfig.FatJar {
-		javaBundleRule.SetAttr("fat_jar", true)
-	}
-	javaBundleRule.SetAttr("visibility", []string{"//visibility:public"})
-	rules = append(rules, javaBundleRule)
-
 	// Version literal baked from bundle.yaml. Empty defaults to "1.0.0" so a
 	// bundle that forgets to set version still produces a valid coordinate
 	// (preserves the previous fallback behavior).
@@ -136,6 +122,22 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	if version == "" {
 		version = "1.0.0"
 	}
+
+	// Java bundle rule. Coordinates come from configuration; the JAR's
+	// MANIFEST.MF carries the version (from `bundle.yaml`). The maven coordinate
+	// used at publish time comes from the sibling maven_publish rule.
+	javaBundleRule := rule.NewRule("java_proto_bundle", fmt.Sprintf("%s_java_bundle", bundleName))
+	javaBundleRule.SetAttr("proto_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_all_protos", bundleName)}})
+	javaBundleRule.SetAttr("java_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_java_grpc", bundleName)}})
+	javaBundleRule.SetAttr("java_grpc_deps", rule.PlatformStrings{Generic: []string{fmt.Sprintf(":%s_java_grpc", bundleName)}})
+	javaBundleRule.SetAttr("group_id", config.JavaConfig.GroupId)
+	javaBundleRule.SetAttr("artifact_id", config.JavaConfig.ArtifactId)
+	javaBundleRule.SetAttr("version", version)
+	if config.JavaConfig.FatJar {
+		javaBundleRule.SetAttr("fat_jar", true)
+	}
+	javaBundleRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, javaBundleRule)
 
 	// POM generator genrule — pom_generator writes POM XML to its --out path. No
 	// upload happens here; that's maven_publish's job.
@@ -328,7 +330,13 @@ func generateProtoLoaderBundleRules(config *MergedConfig, bundleName string, all
 }
 
 // generateLegacyCleanupRules returns empty rules that signal Gazelle to delete
-// legacy grpc-web JS rules from existing BUILD files (replaced by es_proto_compile).
+// rules superseded by migrations:
+//   - js_grpc_library / js_grpc_web_library — replaced by es_proto_compile
+//     (Connect-ES migration)
+//   - genrule(publish_<bundle>_to_*) — replaced by maven_publish + py_binary
+//     (publisher-execution-model migration). Without these, the new rules
+//     would collide with same-named genrules and gazelle's merge silently
+//     skips the new emission.
 func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 	var empty []*rule.Rule
 	bundleName := config.BundleName
@@ -344,6 +352,26 @@ func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 	if config.JavaScriptConfig.Enabled && !config.JavaScriptConfig.ProtoLoader {
 		emptyLoader := rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName))
 		empty = append(empty, emptyLoader)
+	}
+
+	// Delete legacy publish genrules. They collide with the new maven_publish /
+	// py_binary rules (same names) — gazelle's merge would silently skip the
+	// new emission if these aren't explicitly removed first.
+	if config.JavaConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("genrule", fmt.Sprintf("publish_%s_to_maven", bundleName)))
+	}
+	if config.PythonConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("genrule", fmt.Sprintf("publish_%s_to_pypi", bundleName)))
+	}
+	if config.JavaScriptConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("genrule", fmt.Sprintf("publish_%s_to_npm", bundleName)))
+		if config.JavaScriptConfig.ProtoLoader {
+			empty = append(empty,
+				rule.NewRule("genrule", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName)))
+		}
 	}
 
 	return empty
