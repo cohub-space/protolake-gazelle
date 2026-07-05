@@ -1,0 +1,1 @@
+../../../../cohub-knowledge/.claude/commands/status.md
