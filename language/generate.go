@@ -189,6 +189,38 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	publishMavenAlias.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, publishMavenAlias)
 
+	// Local-publish twin at a `-local`-qualified version. Maven caches a
+	// release version forever, so a local install at the release coordinates
+	// silently shadows the eventual CI release on that machine. Keeping local
+	// installs at `<version>-local` leaves the release name vacant; consumers
+	// under test pin the qualifier explicitly. The orchestrator runs this
+	// target instead of the plain one when MAVEN_REPO is not an http(s)
+	// registry (protolake BazelBuildRunner).
+	localVersion := version + "-local"
+	pomLocalRule := rule.NewRule("genrule", fmt.Sprintf("%s_pom_local", bundleName))
+	pomLocalRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{fmt.Sprintf("%s.pom_local.xml", bundleName)}})
+	pomLocalCmd := fmt.Sprintf(
+		"$(location //tools:pom_generator) "+
+			"--group-id %s "+
+			"--artifact-id %s "+
+			"--version %s "+
+			"--protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} "+
+			"--grpc-version $${GRPC_VERSION:-1.78.0} "+
+			"--out $@",
+		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, localVersion)
+	pomLocalRule.SetAttr("cmd", pomLocalCmd)
+	pomLocalRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pom_generator"}})
+	pomLocalRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, pomLocalRule)
+
+	publishMavenLocalRule := rule.NewRule("maven_publish", fmt.Sprintf("publish_%s_to_maven_local", bundleName))
+	publishMavenLocalRule.SetAttr("coordinates",
+		fmt.Sprintf("%s:%s:%s", config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, localVersion))
+	publishMavenLocalRule.SetAttr("pom", fmt.Sprintf(":%s_pom_local", bundleName))
+	publishMavenLocalRule.SetAttr("artifact", fmt.Sprintf(":%s_java_bundle", bundleName))
+	publishMavenLocalRule.SetAttr("visibility", []string{"//visibility:public"})
+	rules = append(rules, publishMavenLocalRule)
+
 	return rules
 }
 
