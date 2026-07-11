@@ -375,6 +375,11 @@ func verifyUserBundle(t *testing.T, content string) {
 	requireContains(t, content, "publish_user-service_to_maven", "maven publish target")
 	requireContains(t, content, "publish_user-service_to_pypi", "pypi publish target")
 	requireContains(t, content, "publish_user-service_to_npm", "npm publish target")
+	// Local-publish twin: -local qualifier keeps local installs off the
+	// release coordinates.
+	requireContains(t, content, "publish_user-service_to_maven_local", "maven local publish target")
+	requireContains(t, content, `coordinates = "com.testcompany.proto:user-service-proto:1.0.0-local"`,
+		"local Maven coordinates carry the -local qualifier")
 	requireAbsent(t, content, "${VERSION:", "no runtime VERSION env-var dance after gazelle bake")
 
 	// build_validation with all 3 language bundle targets
@@ -443,6 +448,8 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireContains(t, content, `--version=2.3.0`, "Version baked into py_binary args")
 	requireContains(t, content, "publish_common-types_to_maven", "maven publish target")
 	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish target")
+	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0-local"`,
+		"local Maven coordinates carry the -local qualifier")
 
 	// Regression check for the version-stuck-at-1.0.0 bug: common-types is 2.3.0
 	// and must never appear with the 1.0.0 fallback.
