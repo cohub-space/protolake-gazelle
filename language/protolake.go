@@ -110,6 +110,21 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 		return language.GenerateResult{}
 	}
 
+	// Fail fast if there's no lake.yaml. A bundle.yaml outside a lake is a
+	// misconfig (usually gazelle running from the wrong root), not a valid
+	// empty state: with no lake defaults, MergeConfigurations leaves every
+	// defaults-reliant language disabled, the disabled-language cleanup then
+	// emits Empty rules for all three languages, and gazelle silently strips
+	// every bundle rule — `bazel build` succeeds publishing nothing. Only
+	// bundle dirs reach this code (the bundle.yaml stat above returns early
+	// otherwise), so the fatal can't fire on ordinary directory walks.
+	if lakeConfig == nil {
+		log.Fatalf("[protolake-gazelle] no lake.yaml found walking up from bundle dir %s. "+
+			"Every protolake bundle must live under a lake root with a lake.yaml; "+
+			"without lake defaults, defaults-reliant bundles merge all-disabled and "+
+			"their BUILD rules would be silently deleted.", args.Dir)
+	}
+
 	// Load bundle configuration
 	bundleConfig, err := LoadBundleConfig(args.Dir)
 	if err != nil {
@@ -376,6 +391,15 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 			NonEmptyAttrs: map[string]bool{
 				"deps": true,
 			},
+			// `deps` must re-sync on regenerate: generateDescriptorSetRules
+			// recomputes the full proto target list each run, and a stale
+			// deps list embeds an incomplete descriptor into the published
+			// JAR with no error. `visibility` is emitted by generation, so
+			// it merges too.
+			MergeableAttrs: map[string]bool{
+				"deps":       true,
+				"visibility": true,
+			},
 		},
 		"js_proto_loader_bundle": {
 			// See java_proto_bundle for why every generated attr is mergeable.
@@ -442,14 +466,24 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 			},
 		},
 		// Legacy rule kinds — kept in KindInfo so Gazelle can delete them
-		// during merge when they appear in GenerateResult.Empty.
+		// during merge when they appear in GenerateResult.Empty. `protos`
+		// (the NonEmptyAttr) must be mergeable: deletion happens only after
+		// the merge drops every NonEmptyAttr, and the merge only drops
+		// mergeable attrs — without this the Empty rules never delete
+		// anything and the Connect-ES cleanup is inert.
 		"js_grpc_library": {
 			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+			MergeableAttrs: map[string]bool{
 				"protos": true,
 			},
 		},
 		"js_grpc_web_library": {
 			NonEmptyAttrs: map[string]bool{
+				"protos": true,
+			},
+			MergeableAttrs: map[string]bool{
 				"protos": true,
 			},
 		},

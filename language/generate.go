@@ -62,28 +62,35 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	// Generate Java bundle if enabled
 	log.Printf("Checking Java bundle generation - Enabled: %v, GroupId: '%s', ArtifactId: '%s'",
 		config.JavaConfig.Enabled, config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
-	if config.JavaConfig.Enabled && config.JavaConfig.GroupId != "" && config.JavaConfig.ArtifactId != "" {
+	if config.JavaConfig.Enabled {
+		requireCoordinates(bundleName, rel, "java",
+			[2]string{"group_id", config.JavaConfig.GroupId},
+			[2]string{"artifact_id", config.JavaConfig.ArtifactId})
 		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalDeps.Java)...)
 	} else {
-		log.Printf("Skipping Java bundle generation for %s", bundleName)
+		log.Printf("Skipping Java bundle generation for %s (disabled)", bundleName)
 	}
 
 	// Generate Python bundle if enabled
 	log.Printf("Checking Python bundle generation - Enabled: %v, PackageName: '%s'",
 		config.PythonConfig.Enabled, config.PythonConfig.PackageName)
-	if config.PythonConfig.Enabled && config.PythonConfig.PackageName != "" {
+	if config.PythonConfig.Enabled {
+		requireCoordinates(bundleName, rel, "python",
+			[2]string{"package_name", config.PythonConfig.PackageName})
 		rules = append(rules, generatePythonBundleRules(config, bundleName, allProtoTargets, externalDeps.ProtoLibraries)...)
 	} else {
-		log.Printf("Skipping Python bundle generation for %s", bundleName)
+		log.Printf("Skipping Python bundle generation for %s (disabled)", bundleName)
 	}
 
 	// Generate JavaScript bundle if enabled
 	log.Printf("Checking JavaScript bundle generation - Enabled: %v, PackageName: '%s'",
 		config.JavaScriptConfig.Enabled, config.JavaScriptConfig.PackageName)
-	if config.JavaScriptConfig.Enabled && config.JavaScriptConfig.PackageName != "" {
+	if config.JavaScriptConfig.Enabled {
+		requireCoordinates(bundleName, rel, "javascript",
+			[2]string{"package_name", config.JavaScriptConfig.PackageName})
 		rules = append(rules, generateJavaScriptBundleRules(config, bundleName, allProtoTargets, externalDeps.ProtoLibraries)...)
 	} else {
-		log.Printf("Skipping JavaScript bundle generation for %s", bundleName)
+		log.Printf("Skipping JavaScript bundle generation for %s (disabled)", bundleName)
 	}
 
 	// Generate descriptor set if enabled
@@ -91,8 +98,9 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 		rules = append(rules, generateDescriptorSetRules(config, bundleName, protoTargets)...)
 	}
 
-	// Generate proto-loader bundle if enabled
-	if config.JavaScriptConfig.Enabled && config.JavaScriptConfig.ProtoLoader && config.JavaScriptConfig.PackageName != "" {
+	// Generate proto-loader bundle if enabled (requireCoordinates above
+	// guarantees a non-empty package name whenever JS is enabled)
+	if config.JavaScriptConfig.Enabled && config.JavaScriptConfig.ProtoLoader {
 		rules = append(rules, generateProtoLoaderBundleRules(config, bundleName, allProtoTargets)...)
 	}
 
@@ -115,6 +123,32 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 	}
 
 	return rules
+}
+
+// requireCoordinates fail-fasts when a language is enabled but a publish
+// coordinate (group_id/artifact_id/package_name) is empty in the merged
+// lake.yaml+bundle.yaml config. Generation needs the coordinates while the
+// disabled-language cleanup keys on Enabled alone, so an enabled-but-
+// coordinate-less language would get neither generation nor cleanup — stale
+// old-form rules survive and fail the bazel loading phase with a confusing
+// error. Mirrors the missing-version fatal in generateBundleRules. Each field
+// is a {name, value} pair; order determines the message order.
+func requireCoordinates(bundleName, rel, language string, fields ...[2]string) {
+	var missing []string
+	for _, f := range fields {
+		if f[1] == "" {
+			missing = append(missing, f[0])
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	log.Fatalf("[protolake-gazelle] bundle %q at %s enables %s but the merged "+
+		"lake.yaml/bundle.yaml config leaves %s empty. An enabled language without "+
+		"coordinates gets neither generated rules nor cleanup, leaving stale rules "+
+		"to break the bazel loading phase. Set the field(s) or disable the language "+
+		"explicitly (`enabled: false`).",
+		bundleName, rel, language, strings.Join(missing, ", "))
 }
 
 // generateJavaBundleRules creates Java bundle rules with maven_publish from rules_jvm_external.
@@ -498,7 +532,9 @@ func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 //   - a lingering old-form bundle rule with `version =` fails at the bazel
 //     loading phase under the post-PL-bstm proto_bundle.bzl (no such attr);
 //   - a lingering publish rule or `publish_to_*` alias dangles on its deleted
-//     bundle target and fails analysis.
+//     bundle target and fails analysis;
+//   - with zero languages enabled, a pre-existing build_validation `all`
+//     dangles on its just-deleted bundle targets (see below).
 //
 // Empty rules that match nothing are no-ops, so this is safe on lakes that
 // never had the language. Never emitted for enabled languages — those are
@@ -535,6 +571,16 @@ func generateDisabledLanguageCleanupRules(config *MergedConfig) []*rule.Rule {
 			// The proto-loader pair is a JS sub-feature — gone with the language.
 			rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName)),
 			rule.NewRule("py_binary", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName)))
+	}
+
+	// With zero languages enabled, generateBundleRules emits no
+	// build_validation at all, so a pre-existing `all` rule would survive and
+	// dangle on its just-deleted bundle targets. Empty-delete it explicitly.
+	// (With at least one language enabled the generated build_validation
+	// merges over the old one — `targets` is mergeable — so the danger only
+	// exists here.)
+	if !config.JavaConfig.Enabled && !config.PythonConfig.Enabled && !config.JavaScriptConfig.Enabled {
+		empty = append(empty, rule.NewRule("build_validation", "all"))
 	}
 
 	return empty

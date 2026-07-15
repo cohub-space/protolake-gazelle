@@ -34,6 +34,82 @@ func TestGazelleIntegration(t *testing.T) {
 	})
 }
 
+// TestGazelleFailsWithoutLakeYaml: a bundle.yaml with no lake.yaml anywhere up
+// the tree is a misconfig, not a valid empty state — with no lake defaults,
+// every defaults-reliant language merges disabled and the disabled-language
+// cleanup would silently strip every bundle rule (bazel then "succeeds" while
+// publishing nothing). The extension must fail fast instead.
+func TestGazelleFailsWithoutLakeYaml(t *testing.T) {
+	testDir := t.TempDir()
+
+	writeFile(t, testDir, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+`)
+	writeFile(t, testDir, "BUILD.bazel", "")
+
+	bundleDir := filepath.Join(testDir, "com", "testcompany", "orphan")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("Failed to create bundle dir: %v", err)
+	}
+	writeFile(t, bundleDir, "bundle.yaml", `name: "orphan-service"
+display_name: "Orphan Service"
+version: "1.0.0"
+`)
+	writeFile(t, bundleDir, "BUILD.bazel", "")
+
+	runGazelleExpectFatal(t, testDir, "no lake.yaml found")
+}
+
+// TestGazelleFailsOnEnabledLanguageWithoutCoordinates: python is enabled via
+// lake defaults but no package_name is provided anywhere. Generation needs the
+// coordinates while cleanup keys on Enabled alone, so this bundle would get
+// neither — stale rules would survive to break the bazel loading phase. The
+// extension must fail fast naming the missing field.
+func TestGazelleFailsOnEnabledLanguageWithoutCoordinates(t *testing.T) {
+	testDir := t.TempDir()
+
+	writeFile(t, testDir, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+`)
+	writeFile(t, testDir, "BUILD.bazel", "")
+	writeFile(t, testDir, "lake.yaml", `config:
+  language_defaults:
+    java:
+      enabled: false
+    python:
+      enabled: true
+    javascript:
+      enabled: false
+`)
+
+	bundleDir := filepath.Join(testDir, "com", "testcompany", "half")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("Failed to create bundle dir: %v", err)
+	}
+	writeFile(t, bundleDir, "bundle.yaml", `name: "half-configured"
+display_name: "Half Configured"
+version: "1.0.0"
+`)
+	writeFile(t, bundleDir, "half.proto", `syntax = "proto3";
+
+package com.testcompany.half;
+
+message Half {
+  string id = 1;
+}
+`)
+	// A proto_library must exist: GenerateRules returns early when a bundle has
+	// no proto targets, and the coordinates guard sits in generateBundleRules.
+	writeFile(t, bundleDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "half_proto",
+    srcs = ["half.proto"],
+    visibility = ["//visibility:public"],
+)
+`)
+
+	runGazelleExpectFatal(t, testDir, "leaves package_name empty")
+}
+
 // readBuildFile reads a BUILD.bazel or BUILD file from the given directory.
 func readBuildFile(t *testing.T, dir string) string {
 	t.Helper()
@@ -504,8 +580,10 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// runGazelle executes the gazelle binary on the test workspace.
-func runGazelle(t *testing.T, testDir string) {
+// runGazelleCmd executes the gazelle binary on the test workspace and returns
+// its combined output and exit error, letting callers assert success or an
+// expected fail-fast.
+func runGazelleCmd(t *testing.T, testDir string) (string, error) {
 	t.Helper()
 	gazelleBinary := findGazelleBinary(t)
 
@@ -525,7 +603,6 @@ func runGazelle(t *testing.T, testDir string) {
 
 	cmd := exec.Command(gazelleBinary, "-lang=protolake")
 	cmd.Env = append(os.Environ(),
-		"VERSION=1.0.0-test",
 		"MAVEN_REPO=file://~/.m2/repository",
 		"PYPI_REPO=file://~/.pypi",
 		"NPM_REGISTRY=file://~/.npm",
@@ -533,8 +610,28 @@ func runGazelle(t *testing.T, testDir string) {
 
 	output, err := cmd.CombinedOutput()
 	t.Logf("Gazelle output:\n%s", string(output))
-	if err != nil {
-		t.Fatalf("Gazelle execution failed: %v\nOutput: %s", err, string(output))
+	return string(output), err
+}
+
+// runGazelle executes the gazelle binary on the test workspace, failing the
+// test if gazelle fails.
+func runGazelle(t *testing.T, testDir string) {
+	t.Helper()
+	if output, err := runGazelleCmd(t, testDir); err != nil {
+		t.Fatalf("Gazelle execution failed: %v\nOutput: %s", err, output)
+	}
+}
+
+// runGazelleExpectFatal runs gazelle expecting the protolake extension to
+// fail-fast (log.Fatalf exits non-zero) with wantMsg in its output.
+func runGazelleExpectFatal(t *testing.T, testDir, wantMsg string) {
+	t.Helper()
+	output, err := runGazelleCmd(t, testDir)
+	if err == nil {
+		t.Fatalf("Gazelle succeeded but a fatal misconfig error containing %q was expected", wantMsg)
+	}
+	if !strings.Contains(output, wantMsg) {
+		t.Errorf("Gazelle failed as expected but output does not contain %q", wantMsg)
 	}
 }
 
