@@ -277,11 +277,14 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"java_deps":      true,
 				"java_grpc_deps": true,
 			},
-			// `version` must be mergeable so bundle.yaml version bumps
-			// propagate into the existing rule on regenerate. Without this,
-			// jar_bundler keeps stamping the previous version into MANIFEST.MF.
+			// `bundle_yaml` is the label the bundlers read the version from at
+			// build time. `version` is no longer emitted but stays mergeable:
+			// gazelle only deletes an existing attr that the generated rule
+			// omits when that attr is mergeable, so this is what strips the
+			// stale baked `version = "X"` from pre-PL-bstm BUILD files.
 			MergeableAttrs: map[string]bool{
-				"version": true,
+				"bundle_yaml": true,
+				"version":     true,
 			},
 		},
 		"py_proto_bundle": {
@@ -291,8 +294,10 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"py_deps":      true,
 				"py_grpc_deps": true,
 			},
+			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"version": true,
+				"bundle_yaml": true,
+				"version":     true,
 			},
 		},
 		"js_proto_bundle": {
@@ -301,8 +306,10 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"proto_deps":   true,
 				"es_deps":      true,
 			},
+			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"version": true,
+				"bundle_yaml": true,
+				"version":     true,
 			},
 		},
 		"es_proto_compile": {
@@ -352,8 +359,10 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"package_name": true,
 				"proto_deps":   true,
 			},
+			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"version": true,
+				"bundle_yaml": true,
+				"version":     true,
 			},
 		},
 		"build_validation": {
@@ -405,10 +414,10 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 		// `genrule` is a built-in, but we declare it here so the merger can
 		// identify and delete the legacy `publish_<bundle>_to_*` genrules
 		// (replaced by maven_publish + py_binary in the publisher-execution-model
-		// migration). `cmd` must be mergeable so version-bearing pom-generator
-		// invocations (e.g. `--version 1.0.0`) get rewritten when bundle.yaml
-		// bumps; without this the published POM XML carries the stale version
-		// while the JAR coordinate is fresh.
+		// migration). `cmd` must be mergeable so pre-PL-bstm pom-generator
+		// invocations carrying a baked `--version X` get rewritten to the
+		// `--bundle-yaml $(location bundle.yaml)` form on regenerate; `srcs`
+		// is mergeable so the bundle.yaml input tracks the generated shape.
 		"genrule": {
 			NonEmptyAttrs: map[string]bool{
 				"cmd":  true,
@@ -417,6 +426,7 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 			MergeableAttrs: map[string]bool{
 				"cmd":  true,
 				"outs": true,
+				"srcs": true,
 			},
 		},
 	}

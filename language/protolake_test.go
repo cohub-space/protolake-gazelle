@@ -83,6 +83,23 @@ func TestKindsAndKindInfo(t *testing.T) {
 		t.Error("java_proto_bundle kind info not found")
 	}
 
+	// Verify the bundle kinds merge `bundle_yaml` (the build-time version
+	// source) and still merge `version` — required so the stale baked
+	// version attr is deleted from pre-PL-bstm BUILD files on regenerate.
+	for _, kind := range []string{"java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "js_proto_loader_bundle"} {
+		info, exists := kindInfo[kind]
+		if !exists {
+			t.Errorf("%s kind info not found", kind)
+			continue
+		}
+		if !info.MergeableAttrs["bundle_yaml"] {
+			t.Errorf("%s should have mergeable attribute 'bundle_yaml'", kind)
+		}
+		if !info.MergeableAttrs["version"] {
+			t.Errorf("%s should keep 'version' mergeable so stale baked versions are deleted on merge", kind)
+		}
+	}
+
 	// Verify maven_publish has the load-bearing attrs.
 	if mavenInfo, exists := kindInfo["maven_publish"]; exists {
 		for _, attr := range []string{"coordinates", "artifact"} {

@@ -367,11 +367,13 @@ func verifyUserBundle(t *testing.T, content string) {
 	// Aggregated proto rule
 	requireContains(t, content, "_all_protos", "aggregated proto rule")
 
-	// Publish rules — version baked from bundle.yaml (1.0.0). No runtime ${VERSION}.
+	// Publish rules. The maven_publish coordinates keep the gazelle-baked
+	// version literal (the one intentional analysis-time literal — see
+	// generateJavaBundleRules); everything else resolves the version from
+	// bundle.yaml at build/run time.
 	requireContains(t, content, "maven_publish", "maven_publish rule")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:user-service-proto:1.0.0"`,
 		"Maven coordinates baked at gazelle time")
-	requireContains(t, content, `--version=1.0.0`, "Version baked into py_binary args")
 	requireContains(t, content, "publish_user-service_to_maven", "maven publish target")
 	requireContains(t, content, "publish_user-service_to_pypi", "pypi publish target")
 	requireContains(t, content, "publish_user-service_to_npm", "npm publish target")
@@ -382,17 +384,30 @@ func verifyUserBundle(t *testing.T, content string) {
 		"local Maven coordinates carry the -local qualifier")
 	requireAbsent(t, content, "${VERSION:", "no runtime VERSION env-var dance after gazelle bake")
 
+	// Version-from-bundle.yaml wiring (PL-bstm): the pom genrules read
+	// bundle.yaml at build time, the local twin appends the -local qualifier,
+	// and the py_binary publishers get bundle.yaml via data + --bundle-yaml.
+	requireContains(t, content, `--bundle-yaml $(location bundle.yaml)`,
+		"pom genrule cmd resolves version from bundle.yaml at build time")
+	requireContains(t, content, `srcs = ["bundle.yaml"]`, "pom genrule srcs carry bundle.yaml")
+	requireContains(t, content, `--version-suffix=-local`,
+		"local pom twin appends the -local qualifier to the bundle.yaml version")
+	requireContains(t, content, `--bundle-yaml=$(location bundle.yaml)`,
+		"py_binary publishers resolve version from bundle.yaml at run time")
+	requireAbsent(t, content, `--version=`, "no version literal in py_binary args")
+
 	// build_validation with all 3 language bundle targets
 	requireContains(t, content, "build_validation", "build_validation rule")
 	requireContains(t, content, "user-service_java_bundle", "java target in build_validation")
 	requireContains(t, content, "user-service_py_bundle", "python target in build_validation")
 	requireContains(t, content, "user-service_js_bundle", "js target in build_validation")
 
-	// java_proto_bundle, py_proto_bundle, js_proto_bundle each carry a `version`
-	// attr so the bundlers (jar_bundler MANIFEST.MF, wheel_builder PKG-INFO,
-	// npm_bundler package.json) embed it. The maven publish coordinate for the
-	// JAR comes from the sibling maven_publish rule, not from the bundle rule.
-	requireContains(t, content, `version = "1.0.0"`, "version attr baked on bundle rules")
+	// java_proto_bundle, py_proto_bundle, js_proto_bundle each carry a
+	// `bundle_yaml` label instead of a baked `version` attr — the bundlers
+	// (jar_bundler MANIFEST.MF, wheel_builder PKG-INFO, npm_bundler
+	// package.json) read the version from bundle.yaml at build time.
+	requireContains(t, content, `bundle_yaml = ":bundle.yaml"`, "bundle_yaml attr on bundle rules")
+	requireAbsent(t, content, `version = "`, "no baked version attr on bundle rules")
 
 	// Cross-bundle dependency: user.proto imports common.proto, so the
 	// generated gRPC rules should reference the common types target.
@@ -441,19 +456,28 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled)")
 	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
 
-	// Publish rules — version baked from bundle.yaml (2.3.0).
+	// Publish rules — maven coordinates keep the gazelle-baked literal (2.3.0);
+	// everything else resolves the version from bundle.yaml at build/run time.
 	requireContains(t, content, "maven_publish", "maven_publish rule")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0"`,
 		"Maven coordinates baked from bundle.yaml")
-	requireContains(t, content, `--version=2.3.0`, "Version baked into py_binary args")
 	requireContains(t, content, "publish_common-types_to_maven", "maven publish target")
 	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish target")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0-local"`,
 		"local Maven coordinates carry the -local qualifier")
 
+	// Version-from-bundle.yaml wiring (PL-bstm).
+	requireContains(t, content, `bundle_yaml = ":bundle.yaml"`, "bundle_yaml attr on bundle rules")
+	requireContains(t, content, `--bundle-yaml $(location bundle.yaml)`,
+		"pom genrule cmd resolves version from bundle.yaml at build time")
+	requireContains(t, content, `srcs = ["bundle.yaml"]`, "pom genrule srcs carry bundle.yaml")
+	requireContains(t, content, `--bundle-yaml=$(location bundle.yaml)`,
+		"py_binary publishers resolve version from bundle.yaml at run time")
+	requireAbsent(t, content, `version = "`, "no baked version attr on bundle rules")
+
 	// Regression check for the version-stuck-at-1.0.0 bug: common-types is 2.3.0
 	// and must never appear with the 1.0.0 fallback.
-	requireAbsent(t, content, `--version=1.0.0`, "no 1.0.0 fallback for common-types (bundle.yaml says 2.3.0)")
+	requireAbsent(t, content, `--version=`, "no version literal in py_binary args")
 	requireAbsent(t, content, `:common-types-proto:1.0.0`, "no 1.0.0 maven coord for common-types")
 
 	// build_validation with only java and python
