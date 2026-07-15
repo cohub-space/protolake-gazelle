@@ -153,8 +153,10 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 		imports[i] = nil
 	}
 
-	// Signal deletion of legacy rules replaced by Connect-ES migration
+	// Signal deletion of legacy rules replaced by migrations, plus stale rules
+	// for languages this bundle has disabled (or never enabled).
 	emptyRules := generateLegacyCleanupRules(mergedConfig)
+	emptyRules = append(emptyRules, generateDisabledLanguageCleanupRules(mergedConfig)...)
 
 	return language.GenerateResult{
 		Gen:     gen,
@@ -269,6 +271,19 @@ func (pe *protolakeExtension) Kinds() map[string]rule.KindInfo {
 // KindInfo returns information about the rules this extension generates
 func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 	return map[string]rule.KindInfo{
+		// On the bundle kinds, every generated attr is mergeable:
+		//   - `bundle_yaml` is the label the bundlers read the version from at
+		//     build time. `version` is no longer emitted but stays mergeable:
+		//     gazelle only deletes an existing attr that the generated rule
+		//     omits when that attr is mergeable, so this is what strips the
+		//     stale baked `version = "X"` from pre-PL-bstm BUILD files.
+		//   - the NonEmptyAttrs must ALSO be mergeable so that the
+		//     disabled-language cleanup works: gazelle deletes a rule matched
+		//     by an Empty rule only once the merge has dropped every
+		//     NonEmptyAttr (rule.IsEmpty), and the merge only drops mergeable
+		//     attrs. Mergeable is the right call anyway — BUILD files in a
+		//     lake are gazelle-owned, so regenerating should re-sync every
+		//     attr from bundle.yaml/lake.yaml.
 		"java_proto_bundle": {
 			NonEmptyAttrs: map[string]bool{
 				"group_id":       true,
@@ -277,14 +292,17 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"java_deps":      true,
 				"java_grpc_deps": true,
 			},
-			// `bundle_yaml` is the label the bundlers read the version from at
-			// build time. `version` is no longer emitted but stays mergeable:
-			// gazelle only deletes an existing attr that the generated rule
-			// omits when that attr is mergeable, so this is what strips the
-			// stale baked `version = "X"` from pre-PL-bstm BUILD files.
 			MergeableAttrs: map[string]bool{
-				"bundle_yaml": true,
-				"version":     true,
+				"group_id":       true,
+				"artifact_id":    true,
+				"proto_deps":     true,
+				"java_deps":      true,
+				"java_grpc_deps": true,
+				"fat_jar":        true,
+				"descriptor_pb":  true,
+				"bundle_name":    true,
+				"bundle_yaml":    true,
+				"version":        true,
 			},
 		},
 		"py_proto_bundle": {
@@ -294,10 +312,13 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"py_deps":      true,
 				"py_grpc_deps": true,
 			},
-			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"bundle_yaml": true,
-				"version":     true,
+				"package_name": true,
+				"proto_deps":   true,
+				"py_deps":      true,
+				"py_grpc_deps": true,
+				"bundle_yaml":  true,
+				"version":      true,
 			},
 		},
 		"js_proto_bundle": {
@@ -306,10 +327,12 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"proto_deps":   true,
 				"es_deps":      true,
 			},
-			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"bundle_yaml": true,
-				"version":     true,
+				"package_name": true,
+				"proto_deps":   true,
+				"es_deps":      true,
+				"bundle_yaml":  true,
+				"version":      true,
 			},
 		},
 		"es_proto_compile": {
@@ -355,18 +378,26 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 			},
 		},
 		"js_proto_loader_bundle": {
+			// See java_proto_bundle for why every generated attr is mergeable.
 			NonEmptyAttrs: map[string]bool{
 				"package_name": true,
 				"proto_deps":   true,
 			},
-			// See java_proto_bundle for why `version` stays mergeable.
 			MergeableAttrs: map[string]bool{
-				"bundle_yaml": true,
-				"version":     true,
+				"package_name": true,
+				"proto_deps":   true,
+				"bundle_yaml":  true,
+				"version":      true,
 			},
 		},
 		"build_validation": {
 			NonEmptyAttrs: map[string]bool{
+				"targets": true,
+			},
+			// `targets` must re-sync on regenerate: when a bundle disables a
+			// language, the stale `:<bundle>_<lang>_bundle` entry would dangle
+			// on the deleted bundle rule and fail analysis.
+			MergeableAttrs: map[string]bool{
 				"targets": true,
 			},
 		},
@@ -397,6 +428,17 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"args":       true,
 				"deps":       true,
 				"visibility": true,
+			},
+		},
+		// `alias` is a built-in, registered so the disabled-language cleanup
+		// can delete a stale `publish_to_*` convenience alias — left behind,
+		// it would dangle on its deleted publish target and fail analysis.
+		"alias": {
+			NonEmptyAttrs: map[string]bool{
+				"actual": true,
+			},
+			MergeableAttrs: map[string]bool{
+				"actual": true,
 			},
 		},
 		// Legacy rule kinds — kept in KindInfo so Gazelle can delete them

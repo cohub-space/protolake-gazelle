@@ -14,10 +14,14 @@ import (
 
 var importPattern = regexp.MustCompile(`import\s+"([^"]+)"`)
 
-// generateBundleRules creates the bundle rules for a bundle using the hybrid approach
-// In the hybrid approach:
-// - Static configuration (coordinates, dependencies) stays in BUILD files
-// - Dynamic configuration (version, repos) comes from environment variables
+// generateBundleRules creates the bundle rules for a bundle.
+// Static configuration (coordinates, dependencies, package names) is baked
+// into BUILD files at gazelle time; the version resolves from the bundle's
+// bundle.yaml at build time (`bundle_yaml` attr on bundle rules,
+// `--bundle-yaml` on the pom genrules and py_binary publishers). The one
+// intentional analysis-time version literal is the maven_publish
+// `coordinates` string, guarded by `--expected-version` on the pom genrules
+// — see generateJavaBundleRules.
 func generateBundleRules(config *MergedConfig, protoTargets []string, rel string, c *config.Config) []*rule.Rule {
 	var rules []*rule.Rule
 	bundleName := config.BundleName
@@ -166,7 +170,11 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	// POM generator genrule — pom_generator writes POM XML to its --out path. No
 	// upload happens here; that's maven_publish's job. The version is read from
 	// bundle.yaml at build time (`--bundle-yaml`), so a version bump takes effect
-	// without regenerating this cmd.
+	// without regenerating this cmd. `--expected-version` bakes the version this
+	// gazelle run saw (the same literal as the maven_publish coordinates below):
+	// if bundle.yaml is edited without a gazelle pass, pom_generator fails
+	// instead of uploading an artifact whose GAV coordinate disagrees with its
+	// POM. Space-separated on purpose — versions can't start with '-'.
 	pomRule := rule.NewRule("genrule", fmt.Sprintf("%s_pom", bundleName))
 	pomRule.SetAttr("srcs", rule.PlatformStrings{Generic: []string{"bundle.yaml"}})
 	pomRule.SetAttr("outs", rule.PlatformStrings{Generic: []string{fmt.Sprintf("%s.pom.xml", bundleName)}})
@@ -175,10 +183,11 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 			"--group-id %s "+
 			"--artifact-id %s "+
 			"--bundle-yaml $(location bundle.yaml) "+
+			"--expected-version %s "+
 			"--protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} "+
 			"--grpc-version $${GRPC_VERSION:-1.78.0} "+
 			"--out $@",
-		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
+		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version)
 	pomRule.SetAttr("cmd", pomCmd)
 	pomRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pom_generator"}})
 	pomRule.SetAttr("visibility", []string{"//visibility:public"})
@@ -226,17 +235,20 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 	// `--version-suffix=-local` (equals form — argparse rejects a space-separated
 	// value starting with `-`) appends the qualifier to the version pom_generator
 	// reads from bundle.yaml, keeping the POM's <version> aligned with the
-	// -local maven_publish coordinates below.
+	// -local maven_publish coordinates below. `--expected-version` carries the
+	// RAW bundle.yaml version (no -local suffix): pom_generator runs the
+	// stale-BUILD check on the pre-suffix version, then applies the suffix.
 	pomLocalCmd := fmt.Sprintf(
 		"$(location //tools:pom_generator) "+
 			"--group-id %s "+
 			"--artifact-id %s "+
 			"--bundle-yaml $(location bundle.yaml) "+
+			"--expected-version %s "+
 			"--version-suffix=-local "+
 			"--protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} "+
 			"--grpc-version $${GRPC_VERSION:-1.78.0} "+
 			"--out $@",
-		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId)
+		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version)
 	pomLocalRule.SetAttr("cmd", pomLocalCmd)
 	pomLocalRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pom_generator"}})
 	pomLocalRule.SetAttr("visibility", []string{"//visibility:public"})
@@ -447,10 +459,13 @@ func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 		empty = append(empty, emptyJsGrpc, emptyJsGrpcWeb)
 	}
 
-	// Delete proto_loader rules if no longer enabled
+	// Delete proto_loader rules if no longer enabled — the bundle rule AND its
+	// publish py_binary (which references the bundle rule via data/args and
+	// would dangle if only the bundle rule were removed).
 	if config.JavaScriptConfig.Enabled && !config.JavaScriptConfig.ProtoLoader {
-		emptyLoader := rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName))
-		empty = append(empty, emptyLoader)
+		empty = append(empty,
+			rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName)),
+			rule.NewRule("py_binary", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName)))
 	}
 
 	// Delete legacy publish genrules. They collide with the new maven_publish /
@@ -471,6 +486,55 @@ func generateLegacyCleanupRules(config *MergedConfig) []*rule.Rule {
 			empty = append(empty,
 				rule.NewRule("genrule", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName)))
 		}
+	}
+
+	return empty
+}
+
+// generateDisabledLanguageCleanupRules returns empty rules for every
+// deterministic target name of each language NOT enabled in the merged
+// config, so stale pre-existing rules are deleted when a bundle disables a
+// language instead of breaking the build:
+//   - a lingering old-form bundle rule with `version =` fails at the bazel
+//     loading phase under the post-PL-bstm proto_bundle.bzl (no such attr);
+//   - a lingering publish rule or `publish_to_*` alias dangles on its deleted
+//     bundle target and fails analysis.
+//
+// Empty rules that match nothing are no-ops, so this is safe on lakes that
+// never had the language. Never emitted for enabled languages — those are
+// covered by the generated rules merging over the existing ones.
+func generateDisabledLanguageCleanupRules(config *MergedConfig) []*rule.Rule {
+	var empty []*rule.Rule
+	bundleName := config.BundleName
+
+	if !config.JavaConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("java_grpc_library", fmt.Sprintf("%s_java_grpc", bundleName)),
+			rule.NewRule("java_proto_bundle", fmt.Sprintf("%s_java_bundle", bundleName)),
+			rule.NewRule("genrule", fmt.Sprintf("%s_pom", bundleName)),
+			rule.NewRule("genrule", fmt.Sprintf("%s_pom_local", bundleName)),
+			rule.NewRule("maven_publish", fmt.Sprintf("publish_%s_to_maven", bundleName)),
+			rule.NewRule("maven_publish", fmt.Sprintf("publish_%s_to_maven_local", bundleName)),
+			rule.NewRule("alias", "publish_to_maven"))
+	}
+
+	if !config.PythonConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("python_grpc_library", fmt.Sprintf("%s_python_grpc", bundleName)),
+			rule.NewRule("py_proto_bundle", fmt.Sprintf("%s_py_bundle", bundleName)),
+			rule.NewRule("py_binary", fmt.Sprintf("publish_%s_to_pypi", bundleName)),
+			rule.NewRule("alias", "publish_to_pypi"))
+	}
+
+	if !config.JavaScriptConfig.Enabled {
+		empty = append(empty,
+			rule.NewRule("es_proto_compile", fmt.Sprintf("%s_es_proto", bundleName)),
+			rule.NewRule("js_proto_bundle", fmt.Sprintf("%s_js_bundle", bundleName)),
+			rule.NewRule("py_binary", fmt.Sprintf("publish_%s_to_npm", bundleName)),
+			rule.NewRule("alias", "publish_to_npm"),
+			// The proto-loader pair is a JS sub-feature — gone with the language.
+			rule.NewRule("js_proto_loader_bundle", fmt.Sprintf("%s_proto_loader_bundle", bundleName)),
+			rule.NewRule("py_binary", fmt.Sprintf("publish_%s_proto_loader_to_npm", bundleName)))
 	}
 
 	return empty
@@ -698,4 +762,3 @@ func findProtoTarget(buildContent, protoFile string) string {
 	}
 	return ""
 }
-

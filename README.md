@@ -21,9 +21,13 @@ gRPC + bundle rules, and per-language publish targets. Package
 coordinates are baked at gazelle time from the bundle's configuration;
 the version resolves from `bundle.yaml` at build/run time via a
 `bundle_yaml` label on the bundle rules and `--bundle-yaml` args on the
-POM genrule and publishers. The only gazelle-time version literal is
-the `maven_publish` `coordinates` string (rules_jvm_external has no
-runtime placeholder for it).
+POM genrule and publishers. The gazelle-time version literals are the
+`maven_publish` `coordinates` string (rules_jvm_external has no runtime
+placeholder for it) and the POM genrule's matching `--expected-version`
+guard, which fails the POM build when `bundle.yaml` was edited without
+a gazelle pass instead of publishing an artifact whose coordinates
+disagree with its POM. Languages a bundle disables get their stale
+rules deleted on regenerate (Empty-rule cleanup).
 
 For a `bundle.yaml` like:
 
