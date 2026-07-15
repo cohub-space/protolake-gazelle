@@ -54,7 +54,7 @@ func TestKindsAndKindInfo(t *testing.T) {
 		"java_proto_bundle", "py_proto_bundle", "js_proto_bundle",
 		"es_proto_compile", "proto_descriptor_set", "js_proto_loader_bundle",
 		"build_validation",
-		"maven_publish", "py_binary",
+		"maven_publish", "py_binary", "alias",
 		"js_grpc_library", "js_grpc_web_library",
 		"genrule",
 	}
@@ -83,6 +83,23 @@ func TestKindsAndKindInfo(t *testing.T) {
 		t.Error("java_proto_bundle kind info not found")
 	}
 
+	// Verify the bundle kinds merge `bundle_yaml` (the build-time version
+	// source) and still merge `version` — required so the stale baked
+	// version attr is deleted from pre-PL-bstm BUILD files on regenerate.
+	for _, kind := range []string{"java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "js_proto_loader_bundle"} {
+		info, exists := kindInfo[kind]
+		if !exists {
+			t.Errorf("%s kind info not found", kind)
+			continue
+		}
+		if !info.MergeableAttrs["bundle_yaml"] {
+			t.Errorf("%s should have mergeable attribute 'bundle_yaml'", kind)
+		}
+		if !info.MergeableAttrs["version"] {
+			t.Errorf("%s should keep 'version' mergeable so stale baked versions are deleted on merge", kind)
+		}
+	}
+
 	// Verify maven_publish has the load-bearing attrs.
 	if mavenInfo, exists := kindInfo["maven_publish"]; exists {
 		for _, attr := range []string{"coordinates", "artifact"} {
@@ -104,6 +121,163 @@ func TestKindsAndKindInfo(t *testing.T) {
 	} else {
 		t.Error("py_binary kind info not found")
 	}
+
+	// Cleanup deletion invariant, derived over EVERY registered kind so a
+	// future cleanup kind can't escape it by being left off a hand-maintained
+	// list: gazelle deletes a rule matched by an Empty rule only once the
+	// merge has dropped every NonEmptyAttr (rule.IsEmpty), and the merge only
+	// drops mergeable attrs. So any kind whose NonEmptyAttrs aren't all
+	// mergeable can never be deleted by cleanup — its Empty rules are inert.
+	for kind, info := range kindInfo {
+		for attr := range info.NonEmptyAttrs {
+			if !info.MergeableAttrs[attr] {
+				t.Errorf("%s: NonEmptyAttr %q must be mergeable — otherwise Empty-rule "+
+					"cleanup can never delete stale rules of this kind", kind, attr)
+			}
+		}
+	}
+}
+
+// TestCleanupRuleKindsRegistered derives the set of kinds actually emitted by
+// the cleanup generators (rather than hand-duplicating their internals) and
+// asserts each is registered in Kinds() — gazelle can only merge/delete rules
+// of kinds it knows about, so an unregistered cleanup kind is silently inert.
+// The NonEmptyAttrs ⊆ MergeableAttrs half of the invariant is enforced for all
+// registered kinds in TestKindsAndKindInfo.
+func TestCleanupRuleKindsRegistered(t *testing.T) {
+	ext := &protolakeExtension{}
+	kinds := ext.Kinds()
+
+	// Representative configs covering every emission branch: all languages
+	// disabled (maximal disabled-language cleanup, incl. the build_validation
+	// `all` deletion), all enabled with proto_loader off (legacy Connect-ES +
+	// publish-genrule cleanup + proto-loader pair deletion), and all enabled
+	// with proto_loader on (legacy proto-loader publish genrule).
+	configs := []*MergedConfig{
+		{BundleName: "demo"},
+		{
+			BundleName:       "demo",
+			JavaConfig:       JavaConfig{Enabled: true, GroupId: "g", ArtifactId: "a"},
+			PythonConfig:     PythonConfig{Enabled: true, PackageName: "p"},
+			JavaScriptConfig: JavaScriptConfig{Enabled: true, PackageName: "@d/p"},
+		},
+		{
+			BundleName:       "demo",
+			JavaConfig:       JavaConfig{Enabled: true, GroupId: "g", ArtifactId: "a"},
+			PythonConfig:     PythonConfig{Enabled: true, PackageName: "p"},
+			JavaScriptConfig: JavaScriptConfig{Enabled: true, PackageName: "@d/p", ProtoLoader: true},
+		},
+	}
+
+	seen := map[string]bool{}
+	for _, cfg := range configs {
+		for _, r := range append(generateLegacyCleanupRules(cfg), generateDisabledLanguageCleanupRules(cfg)...) {
+			seen[r.Kind()] = true
+		}
+	}
+
+	if len(seen) < 10 {
+		t.Errorf("expected the cleanup generators to emit at least 10 distinct kinds, got %d: %v", len(seen), seen)
+	}
+	for kind := range seen {
+		if _, ok := kinds[kind]; !ok {
+			t.Errorf("cleanup rule kind %q is not registered in Kinds() — gazelle "+
+				"cannot delete rules of unregistered kinds, so this cleanup is inert", kind)
+		}
+	}
+}
+
+func TestGenerateDisabledLanguageCleanupRules(t *testing.T) {
+	config := &MergedConfig{
+		BundleName:       "demo",
+		JavaConfig:       JavaConfig{Enabled: true, GroupId: "g", ArtifactId: "a"},
+		PythonConfig:     PythonConfig{Enabled: false},
+		JavaScriptConfig: JavaScriptConfig{Enabled: false},
+	}
+
+	empty := generateDisabledLanguageCleanupRules(config)
+
+	got := make(map[string]string, len(empty)) // name -> kind
+	for _, r := range empty {
+		got[r.Name()] = r.Kind()
+	}
+
+	want := map[string]string{
+		// python disabled
+		"demo_python_grpc":     "python_grpc_library",
+		"demo_py_bundle":       "py_proto_bundle",
+		"publish_demo_to_pypi": "py_binary",
+		"publish_to_pypi":      "alias",
+		// javascript disabled (incl. the proto-loader pair)
+		"demo_es_proto":                    "es_proto_compile",
+		"demo_js_bundle":                   "js_proto_bundle",
+		"publish_demo_to_npm":              "py_binary",
+		"publish_to_npm":                   "alias",
+		"demo_proto_loader_bundle":         "js_proto_loader_bundle",
+		"publish_demo_proto_loader_to_npm": "py_binary",
+	}
+
+	if len(got) != len(want) {
+		t.Errorf("expected %d cleanup rules, got %d: %v", len(want), len(got), got)
+	}
+	for name, kind := range want {
+		if got[name] != kind {
+			t.Errorf("expected cleanup rule %s of kind %s, got kind %q", name, kind, got[name])
+		}
+	}
+
+	// Java is enabled — none of its targets may be scheduled for deletion.
+	for _, name := range []string{
+		"demo_java_grpc", "demo_java_bundle", "demo_pom", "demo_pom_local",
+		"publish_demo_to_maven", "publish_demo_to_maven_local", "publish_to_maven",
+	} {
+		if _, ok := got[name]; ok {
+			t.Errorf("cleanup rule emitted for ENABLED java target %s", name)
+		}
+	}
+
+	// With a language still enabled, generateBundleRules emits a
+	// build_validation that merges over the existing one — the cleanup must
+	// NOT also schedule it for deletion.
+	if kind, ok := got["all"]; ok {
+		t.Errorf("build_validation cleanup emitted while a language is enabled (kind %q)", kind)
+	}
+}
+
+// With ALL languages disabled, generateBundleRules emits no build_validation
+// at all, so the cleanup must Empty-delete a pre-existing `all` rule —
+// otherwise it dangles on its just-deleted bundle targets and fails analysis.
+func TestGenerateDisabledLanguageCleanupRulesAllDisabled(t *testing.T) {
+	config := &MergedConfig{
+		BundleName:       "demo",
+		JavaConfig:       JavaConfig{Enabled: false},
+		PythonConfig:     PythonConfig{Enabled: false},
+		JavaScriptConfig: JavaScriptConfig{Enabled: false},
+	}
+
+	empty := generateDisabledLanguageCleanupRules(config)
+
+	got := make(map[string]string, len(empty)) // name -> kind
+	for _, r := range empty {
+		got[r.Name()] = r.Kind()
+	}
+
+	if got["all"] != "build_validation" {
+		t.Errorf("expected Empty build_validation(\"all\") with all languages disabled, got kind %q", got["all"])
+	}
+
+	// All three languages' deterministic targets must be scheduled too.
+	for _, name := range []string{
+		"demo_java_grpc", "demo_java_bundle", "demo_pom", "demo_pom_local",
+		"publish_demo_to_maven", "publish_demo_to_maven_local", "publish_to_maven",
+		"demo_python_grpc", "demo_py_bundle", "publish_demo_to_pypi", "publish_to_pypi",
+		"demo_es_proto", "demo_js_bundle", "publish_demo_to_npm", "publish_to_npm",
+		"demo_proto_loader_bundle", "publish_demo_proto_loader_to_npm",
+	} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("expected cleanup rule for %s with all languages disabled", name)
+		}
+	}
 }
 
 func TestLoads(t *testing.T) {
@@ -112,14 +286,14 @@ func TestLoads(t *testing.T) {
 	// Test Loads method
 	loads := ext.Loads()
 	expectedLoads := map[string][]string{
-		"@rules_proto//proto:defs.bzl":        {"proto_library"},
-		"@rules_proto_grpc_java//:defs.bzl":   {"java_grpc_library"},
-		"@rules_proto_grpc_python//:defs.bzl": {"python_grpc_library"},
+		"@rules_proto//proto:defs.bzl":                         {"proto_library"},
+		"@rules_proto_grpc_java//:defs.bzl":                    {"java_grpc_library"},
+		"@rules_proto_grpc_python//:defs.bzl":                  {"python_grpc_library"},
 		"@rules_jvm_external//private/rules:maven_publish.bzl": {"maven_publish"},
-		"@rules_python//python:defs.bzl":      {"py_binary"},
-		"//tools:es_proto.bzl":                {"es_proto_compile"},
-		"//tools:proto_bundle.bzl":            {"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},
-		"@rules_proto_grpc_js//:defs.bzl":     {"js_grpc_library", "js_grpc_web_library"},
+		"@rules_python//python:defs.bzl":                       {"py_binary"},
+		"//tools:es_proto.bzl":                                 {"es_proto_compile"},
+		"//tools:proto_bundle.bzl":                             {"build_validation", "java_proto_bundle", "py_proto_bundle", "js_proto_bundle", "proto_descriptor_set", "js_proto_loader_bundle"},
+		"@rules_proto_grpc_js//:defs.bzl":                      {"js_grpc_library", "js_grpc_web_library"},
 	}
 
 	if len(loads) != len(expectedLoads) {

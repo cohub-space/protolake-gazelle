@@ -17,9 +17,17 @@ collection, version handling) see the
 
 For each directory containing a `bundle.yaml`, the extension emits the
 full set of bundle rules: an aggregated `proto_library`, per-language
-gRPC + bundle rules, and per-language publish targets. Coordinates and
-versions are baked into the rules at gazelle time from the bundle's
-configuration.
+gRPC + bundle rules, and per-language publish targets. Package
+coordinates are baked at gazelle time from the bundle's configuration;
+the version resolves from `bundle.yaml` at build/run time via a
+`bundle_yaml` label on the bundle rules and `--bundle-yaml` args on the
+POM genrule and publishers. The gazelle-time version literals are the
+`maven_publish` `coordinates` string (rules_jvm_external has no runtime
+placeholder for it) and the POM genrule's matching `--expected-version`
+guard, which fails the POM build when `bundle.yaml` was edited without
+a gazelle pass instead of publishing an artifact whose coordinates
+disagree with its POM. Languages a bundle disables get their stale
+rules deleted on regenerate (Empty-rule cleanup).
 
 For a `bundle.yaml` like:
 
@@ -63,15 +71,16 @@ java_proto_bundle(
     name = "user-service_java_bundle",
     group_id = "com.example.proto",
     artifact_id = "user-service-proto",
-    version = "1.0.0",
+    bundle_yaml = ":bundle.yaml",
     proto_deps = [":user-service_all_protos"],
     java_deps = [":user-service_java_grpc"],
     java_grpc_deps = [":user-service_java_grpc"],
 )
 genrule(
     name = "user-service_pom",
+    srcs = ["bundle.yaml"],
     outs = ["user-service.pom.xml"],
-    cmd = "$(location //tools:pom_generator) --group-id ... --version 1.0.0 ... --out $@",
+    cmd = "$(location //tools:pom_generator) --group-id ... --bundle-yaml $(location bundle.yaml) ... --out $@",
     tools = ["//tools:pom_generator"],
 )
 maven_publish(
@@ -86,7 +95,7 @@ python_grpc_library(name = "user-service_python_grpc", protos = [...])
 py_proto_bundle(
     name = "user-service_py_bundle",
     package_name = "example_user_proto",
-    version = "1.0.0",
+    bundle_yaml = ":bundle.yaml",
     proto_deps = [":user-service_all_protos"],
     py_grpc_deps = [":user-service_python_grpc"],
 )
@@ -97,9 +106,12 @@ py_binary(
     args = [
         "$(location :user-service_py_bundle)",
         "--package-name=example_user_proto",
-        "--version=1.0.0",
+        "--bundle-yaml=$(location bundle.yaml)",
     ],
-    data = [":user-service_py_bundle"],
+    data = [
+        ":user-service_py_bundle",
+        "bundle.yaml",
+    ],
     deps = ["//tools:publisher_utils"],
 )
 
@@ -108,7 +120,7 @@ es_proto_compile(name = "user-service_es_proto", protos = [...])
 js_proto_bundle(
     name = "user-service_js_bundle",
     package_name = "@example/user-service-proto",
-    version = "1.0.0",
+    bundle_yaml = ":bundle.yaml",
     proto_deps = [":user-service_all_protos"],
     es_deps = [":user-service_es_proto"],
 )

@@ -8,10 +8,13 @@ import (
 	"testing"
 )
 
-// TestGazelleIntegration runs Gazelle on a 2-bundle workspace and verifies
+// TestGazelleIntegration runs Gazelle on a 3-bundle workspace and verifies
 // BUILD file generation. The workspace has:
 //   - user-service bundle (java+python+js enabled, protos in api/v1/ subdirectory)
-//   - common-types bundle (java+python enabled, js DISABLED, protos in types/v1/ subdirectory)
+//   - common-types bundle (java+python enabled, js DISABLED, protos in types/v1/
+//     subdirectory; BUILD seeded with stale old-form JS rules that must be deleted)
+//   - legacy-service bundle (all languages enabled; BUILD seeded pre-PL-bstm —
+//     baked version attrs / --version flags — and must be migrated in place)
 //   - Cross-bundle import: user.proto imports common.proto
 func TestGazelleIntegration(t *testing.T) {
 	testDir := t.TempDir()
@@ -21,12 +24,90 @@ func TestGazelleIntegration(t *testing.T) {
 
 	userContent := readBuildFile(t, filepath.Join(testDir, "com", "testcompany", "user"))
 	commonContent := readBuildFile(t, filepath.Join(testDir, "com", "testcompany", "common"))
+	legacyContent := readBuildFile(t, filepath.Join(testDir, "com", "testcompany", "legacy"))
 
 	t.Run("UserBundle", func(t *testing.T) { verifyUserBundle(t, userContent) })
 	t.Run("CommonBundle", func(t *testing.T) { verifyCommonBundle(t, commonContent) })
+	t.Run("LegacyMigration", func(t *testing.T) { verifyLegacyMigration(t, legacyContent) })
 	t.Run("SubdirectoryTargets", func(t *testing.T) {
 		verifySubdirectoryTargets(t, userContent, commonContent)
 	})
+}
+
+// TestGazelleFailsWithoutLakeYaml: a bundle.yaml with no lake.yaml anywhere up
+// the tree is a misconfig, not a valid empty state — with no lake defaults,
+// every defaults-reliant language merges disabled and the disabled-language
+// cleanup would silently strip every bundle rule (bazel then "succeeds" while
+// publishing nothing). The extension must fail fast instead.
+func TestGazelleFailsWithoutLakeYaml(t *testing.T) {
+	testDir := t.TempDir()
+
+	writeFile(t, testDir, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+`)
+	writeFile(t, testDir, "BUILD.bazel", "")
+
+	bundleDir := filepath.Join(testDir, "com", "testcompany", "orphan")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("Failed to create bundle dir: %v", err)
+	}
+	writeFile(t, bundleDir, "bundle.yaml", `name: "orphan-service"
+display_name: "Orphan Service"
+version: "1.0.0"
+`)
+	writeFile(t, bundleDir, "BUILD.bazel", "")
+
+	runGazelleExpectFatal(t, testDir, "no lake.yaml found")
+}
+
+// TestGazelleFailsOnEnabledLanguageWithoutCoordinates: python is enabled via
+// lake defaults but no package_name is provided anywhere. Generation needs the
+// coordinates while cleanup keys on Enabled alone, so this bundle would get
+// neither — stale rules would survive to break the bazel loading phase. The
+// extension must fail fast naming the missing field.
+func TestGazelleFailsOnEnabledLanguageWithoutCoordinates(t *testing.T) {
+	testDir := t.TempDir()
+
+	writeFile(t, testDir, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+`)
+	writeFile(t, testDir, "BUILD.bazel", "")
+	writeFile(t, testDir, "lake.yaml", `config:
+  language_defaults:
+    java:
+      enabled: false
+    python:
+      enabled: true
+    javascript:
+      enabled: false
+`)
+
+	bundleDir := filepath.Join(testDir, "com", "testcompany", "half")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("Failed to create bundle dir: %v", err)
+	}
+	writeFile(t, bundleDir, "bundle.yaml", `name: "half-configured"
+display_name: "Half Configured"
+version: "1.0.0"
+`)
+	writeFile(t, bundleDir, "half.proto", `syntax = "proto3";
+
+package com.testcompany.half;
+
+message Half {
+  string id = 1;
+}
+`)
+	// A proto_library must exist: GenerateRules returns early when a bundle has
+	// no proto targets, and the coordinates guard sits in generateBundleRules.
+	writeFile(t, bundleDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "half_proto",
+    srcs = ["half.proto"],
+    visibility = ["//visibility:public"],
+)
+`)
+
+	runGazelleExpectFatal(t, testDir, "leaves package_name empty")
 }
 
 // readBuildFile reads a BUILD.bazel or BUILD file from the given directory.
@@ -221,8 +302,59 @@ config:
       enabled: false
 `)
 
-	// Empty BUILD at bundle root
-	writeFile(t, commonDir, "BUILD.bazel", "")
+	// BUILD at bundle root seeded with STALE old-form JS rules — JS is disabled
+	// for this bundle, so the disabled-language cleanup must delete every one of
+	// them. The js_proto_bundle carries the old baked `version` attr: left in
+	// place it would fail the bazel loading phase under the post-PL-bstm
+	// proto_bundle.bzl; the publish py_binary, publish_to_npm alias, and the
+	// build_validation js target would dangle on the deleted rules.
+	writeFile(t, commonDir, "BUILD.bazel", `load("@rules_python//python:defs.bzl", "py_binary")
+load("//tools:es_proto.bzl", "es_proto_compile")
+load("//tools:proto_bundle.bzl", "build_validation", "js_proto_bundle")
+
+es_proto_compile(
+    name = "common-types_es_proto",
+    protos = ["//com/testcompany/common/types/v1:common_proto"],
+    visibility = ["//visibility:public"],
+)
+
+js_proto_bundle(
+    name = "common-types_js_bundle",
+    es_deps = [":common-types_es_proto"],
+    package_name = "@testcompany/common-types-proto",
+    proto_deps = [":common-types_all_protos"],
+    version = "9.9.9",
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "publish_common-types_to_npm",
+    srcs = ["//tools:publish/npm_publisher_generated.py"],
+    args = [
+        "$(location :common-types_js_bundle)",
+        "--package-name=@testcompany/common-types-proto",
+        "--version=9.9.9",
+    ],
+    data = [":common-types_js_bundle"],
+    main = "publish/npm_publisher_generated.py",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "publish_to_npm",
+    actual = ":publish_common-types_to_npm",
+    visibility = ["//visibility:public"],
+)
+
+build_validation(
+    name = "all",
+    targets = [
+        ":common-types_java_bundle",
+        ":common-types_py_bundle",
+        ":common-types_js_bundle",
+    ],
+)
+`)
 
 	writeFile(t, commonTypesDir, "common.proto", `syntax = "proto3";
 
@@ -254,6 +386,190 @@ proto_library(
     visibility = ["//visibility:public"],
 )
 `)
+
+	// ---------- legacy-service bundle (pre-PL-bstm MIGRATION fixture) ----------
+	// The seeded BUILD is shaped exactly like a pre-PL-bstm gazelle emission:
+	// bundle rules carry baked `version` attrs and no bundle_yaml, the pom
+	// genrule bakes `--version` and has no srcs, the py_binary publishers bake
+	// `--version=` args, and maven_publish carries stale 9.9.9 coordinates.
+	// One gazelle run must migrate all of it in place.
+	legacyDir := filepath.Join(root, "com", "testcompany", "legacy")
+	legacyApiDir := filepath.Join(legacyDir, "api", "v1")
+	os.MkdirAll(legacyApiDir, 0755)
+
+	writeFile(t, legacyDir, "bundle.yaml", `name: "legacy-service"
+display_name: "Legacy Service"
+description: "Pre-PL-bstm bundle migrated in place"
+bundle_prefix: "com.testcompany"
+version: "3.1.4"
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: "com.testcompany.proto"
+      artifact_id: "legacy-service-proto"
+    python:
+      enabled: true
+      package_name: "testcompany_legacy_proto"
+    javascript:
+      enabled: true
+      package_name: "@testcompany/legacy-service-proto"
+`)
+
+	writeFile(t, legacyDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_proto_grpc_java//:defs.bzl", "java_grpc_library")
+load("@rules_proto_grpc_python//:defs.bzl", "python_grpc_library")
+load("@rules_jvm_external//private/rules:maven_publish.bzl", "maven_publish")
+load("@rules_python//python:defs.bzl", "py_binary")
+load("//tools:es_proto.bzl", "es_proto_compile")
+load("//tools:proto_bundle.bzl", "build_validation", "java_proto_bundle", "js_proto_bundle", "py_proto_bundle")
+
+proto_library(
+    name = "legacy-service_all_protos",
+    visibility = ["//visibility:public"],
+    deps = ["//com/testcompany/legacy/api/v1:legacy_proto"],
+)
+
+java_grpc_library(
+    name = "legacy-service_java_grpc",
+    protos = ["//com/testcompany/legacy/api/v1:legacy_proto"],
+    visibility = ["//visibility:public"],
+)
+
+java_proto_bundle(
+    name = "legacy-service_java_bundle",
+    artifact_id = "legacy-service-proto",
+    group_id = "com.testcompany.proto",
+    java_deps = [":legacy-service_java_grpc"],
+    java_grpc_deps = [":legacy-service_java_grpc"],
+    proto_deps = [":legacy-service_all_protos"],
+    version = "9.9.9",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "legacy-service_pom",
+    outs = ["legacy-service.pom.xml"],
+    cmd = "$(location //tools:pom_generator) --group-id com.testcompany.proto --artifact-id legacy-service-proto --version 9.9.9 --protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} --grpc-version $${GRPC_VERSION:-1.78.0} --out $@",
+    tools = ["//tools:pom_generator"],
+    visibility = ["//visibility:public"],
+)
+
+maven_publish(
+    name = "publish_legacy-service_to_maven",
+    artifact = ":legacy-service_java_bundle",
+    coordinates = "com.testcompany.proto:legacy-service-proto:9.9.9",
+    pom = ":legacy-service_pom",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "publish_to_maven",
+    actual = ":publish_legacy-service_to_maven",
+    visibility = ["//visibility:public"],
+)
+
+python_grpc_library(
+    name = "legacy-service_python_grpc",
+    protos = ["//com/testcompany/legacy/api/v1:legacy_proto"],
+    visibility = ["//visibility:public"],
+)
+
+py_proto_bundle(
+    name = "legacy-service_py_bundle",
+    package_name = "testcompany_legacy_proto",
+    proto_deps = [":legacy-service_all_protos"],
+    py_grpc_deps = [":legacy-service_python_grpc"],
+    version = "9.9.9",
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "publish_legacy-service_to_pypi",
+    srcs = ["//tools:publish/pypi_publisher_generated.py"],
+    args = [
+        "$(location :legacy-service_py_bundle)",
+        "--package-name=testcompany_legacy_proto",
+        "--version=9.9.9",
+    ],
+    data = [":legacy-service_py_bundle"],
+    main = "publish/pypi_publisher_generated.py",
+    visibility = ["//visibility:public"],
+    deps = ["//tools:publisher_utils"],
+)
+
+alias(
+    name = "publish_to_pypi",
+    actual = ":publish_legacy-service_to_pypi",
+    visibility = ["//visibility:public"],
+)
+
+es_proto_compile(
+    name = "legacy-service_es_proto",
+    protos = ["//com/testcompany/legacy/api/v1:legacy_proto"],
+    visibility = ["//visibility:public"],
+)
+
+js_proto_bundle(
+    name = "legacy-service_js_bundle",
+    es_deps = [":legacy-service_es_proto"],
+    package_name = "@testcompany/legacy-service-proto",
+    proto_deps = [":legacy-service_all_protos"],
+    version = "9.9.9",
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "publish_legacy-service_to_npm",
+    srcs = ["//tools:publish/npm_publisher_generated.py"],
+    args = [
+        "$(location :legacy-service_js_bundle)",
+        "--package-name=@testcompany/legacy-service-proto",
+        "--version=9.9.9",
+    ],
+    data = [":legacy-service_js_bundle"],
+    main = "publish/npm_publisher_generated.py",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "publish_to_npm",
+    actual = ":publish_legacy-service_to_npm",
+    visibility = ["//visibility:public"],
+)
+
+build_validation(
+    name = "all",
+    targets = [
+        ":legacy-service_java_bundle",
+        ":legacy-service_py_bundle",
+        ":legacy-service_js_bundle",
+    ],
+)
+`)
+
+	writeFile(t, legacyApiDir, "legacy.proto", `syntax = "proto3";
+
+package com.testcompany.legacy.api.v1;
+
+message LegacyRecord {
+  string id = 1;
+  string payload = 2;
+}
+
+service LegacyService {
+  rpc GetRecord(LegacyRecord) returns (LegacyRecord);
+}
+`)
+
+	writeFile(t, legacyApiDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "legacy_proto",
+    srcs = ["legacy.proto"],
+    visibility = ["//visibility:public"],
+)
+`)
 }
 
 // writeFile creates parent directories if needed and writes content to dir/name.
@@ -264,8 +580,10 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// runGazelle executes the gazelle binary on the test workspace.
-func runGazelle(t *testing.T, testDir string) {
+// runGazelleCmd executes the gazelle binary on the test workspace and returns
+// its combined output and exit error, letting callers assert success or an
+// expected fail-fast.
+func runGazelleCmd(t *testing.T, testDir string) (string, error) {
 	t.Helper()
 	gazelleBinary := findGazelleBinary(t)
 
@@ -285,7 +603,6 @@ func runGazelle(t *testing.T, testDir string) {
 
 	cmd := exec.Command(gazelleBinary, "-lang=protolake")
 	cmd.Env = append(os.Environ(),
-		"VERSION=1.0.0-test",
 		"MAVEN_REPO=file://~/.m2/repository",
 		"PYPI_REPO=file://~/.pypi",
 		"NPM_REGISTRY=file://~/.npm",
@@ -293,8 +610,28 @@ func runGazelle(t *testing.T, testDir string) {
 
 	output, err := cmd.CombinedOutput()
 	t.Logf("Gazelle output:\n%s", string(output))
-	if err != nil {
-		t.Fatalf("Gazelle execution failed: %v\nOutput: %s", err, string(output))
+	return string(output), err
+}
+
+// runGazelle executes the gazelle binary on the test workspace, failing the
+// test if gazelle fails.
+func runGazelle(t *testing.T, testDir string) {
+	t.Helper()
+	if output, err := runGazelleCmd(t, testDir); err != nil {
+		t.Fatalf("Gazelle execution failed: %v\nOutput: %s", err, output)
+	}
+}
+
+// runGazelleExpectFatal runs gazelle expecting the protolake extension to
+// fail-fast (log.Fatalf exits non-zero) with wantMsg in its output.
+func runGazelleExpectFatal(t *testing.T, testDir, wantMsg string) {
+	t.Helper()
+	output, err := runGazelleCmd(t, testDir)
+	if err == nil {
+		t.Fatalf("Gazelle succeeded but a fatal misconfig error containing %q was expected", wantMsg)
+	}
+	if !strings.Contains(output, wantMsg) {
+		t.Errorf("Gazelle failed as expected but output does not contain %q", wantMsg)
 	}
 }
 
@@ -367,11 +704,13 @@ func verifyUserBundle(t *testing.T, content string) {
 	// Aggregated proto rule
 	requireContains(t, content, "_all_protos", "aggregated proto rule")
 
-	// Publish rules — version baked from bundle.yaml (1.0.0). No runtime ${VERSION}.
+	// Publish rules. The maven_publish coordinates keep the gazelle-baked
+	// version literal (the one intentional analysis-time literal — see
+	// generateJavaBundleRules); everything else resolves the version from
+	// bundle.yaml at build/run time.
 	requireContains(t, content, "maven_publish", "maven_publish rule")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:user-service-proto:1.0.0"`,
 		"Maven coordinates baked at gazelle time")
-	requireContains(t, content, `--version=1.0.0`, "Version baked into py_binary args")
 	requireContains(t, content, "publish_user-service_to_maven", "maven publish target")
 	requireContains(t, content, "publish_user-service_to_pypi", "pypi publish target")
 	requireContains(t, content, "publish_user-service_to_npm", "npm publish target")
@@ -382,17 +721,40 @@ func verifyUserBundle(t *testing.T, content string) {
 		"local Maven coordinates carry the -local qualifier")
 	requireAbsent(t, content, "${VERSION:", "no runtime VERSION env-var dance after gazelle bake")
 
+	// Version-from-bundle.yaml wiring (PL-bstm): the pom genrules read
+	// bundle.yaml at build time, the local twin appends the -local qualifier,
+	// and the py_binary publishers get bundle.yaml via data + --bundle-yaml.
+	requireContains(t, content, `--bundle-yaml $(location bundle.yaml)`,
+		"pom genrule cmd resolves version from bundle.yaml at build time")
+	requireContains(t, content, `srcs = ["bundle.yaml"]`, "pom genrule srcs carry bundle.yaml")
+	requireContains(t, content, `--version-suffix=-local`,
+		"local pom twin appends the -local qualifier to the bundle.yaml version")
+	// Stale-BUILD guard: both pom genrules bake the RAW bundle.yaml version
+	// (pre-suffix, also on the -local twin) as --expected-version so a
+	// bundle.yaml edit without a gazelle pass fails the pom build instead of
+	// publishing an artifact whose GAV disagrees with its POM.
+	requireContains(t, content, `--expected-version 1.0.0 `,
+		"pom genrules bake the expected version as a stale-BUILD guard")
+	requireContains(t, content, `--expected-version 1.0.0 --version-suffix=-local`,
+		"local pom twin checks the RAW (pre-suffix) version")
+	requireAbsent(t, content, `--expected-version 1.0.0-local`,
+		"the -local suffix must never leak into --expected-version")
+	requireContains(t, content, `--bundle-yaml=$(location bundle.yaml)`,
+		"py_binary publishers resolve version from bundle.yaml at run time")
+	requireAbsent(t, content, `--version=`, "no version literal in py_binary args")
+
 	// build_validation with all 3 language bundle targets
 	requireContains(t, content, "build_validation", "build_validation rule")
 	requireContains(t, content, "user-service_java_bundle", "java target in build_validation")
 	requireContains(t, content, "user-service_py_bundle", "python target in build_validation")
 	requireContains(t, content, "user-service_js_bundle", "js target in build_validation")
 
-	// java_proto_bundle, py_proto_bundle, js_proto_bundle each carry a `version`
-	// attr so the bundlers (jar_bundler MANIFEST.MF, wheel_builder PKG-INFO,
-	// npm_bundler package.json) embed it. The maven publish coordinate for the
-	// JAR comes from the sibling maven_publish rule, not from the bundle rule.
-	requireContains(t, content, `version = "1.0.0"`, "version attr baked on bundle rules")
+	// java_proto_bundle, py_proto_bundle, js_proto_bundle each carry a
+	// `bundle_yaml` label instead of a baked `version` attr — the bundlers
+	// (jar_bundler MANIFEST.MF, wheel_builder PKG-INFO, npm_bundler
+	// package.json) read the version from bundle.yaml at build time.
+	requireContains(t, content, `bundle_yaml = ":bundle.yaml"`, "bundle_yaml attr on bundle rules")
+	requireAbsent(t, content, `version = "`, "no baked version attr on bundle rules")
 
 	// Cross-bundle dependency: user.proto imports common.proto, so the
 	// generated gRPC rules should reference the common types target.
@@ -427,7 +789,10 @@ func verifyUserBundle(t *testing.T, content string) {
 }
 
 // verifyCommonBundle checks the common-types bundle BUILD file.
-// Java and Python enabled; JavaScript explicitly disabled.
+// Java and Python enabled; JavaScript explicitly disabled. The seeded BUILD
+// carried stale old-form JS rules (js_proto_bundle with a baked version attr,
+// es_proto_compile, publish py_binary, publish_to_npm alias, js target in
+// build_validation) — the disabled-language cleanup must delete all of them.
 func verifyCommonBundle(t *testing.T, content string) {
 	// Enabled languages
 	requireContains(t, content, "java_proto_bundle", "java_proto_bundle rule")
@@ -436,24 +801,39 @@ func verifyCommonBundle(t *testing.T, content string) {
 	requireContains(t, content, "py_proto_bundle", "py_proto_bundle rule")
 	requireContains(t, content, `package_name = "testcompany_common_proto"`, "Python package_name")
 
-	// JavaScript must NOT be generated (explicitly disabled in bundle.yaml)
-	requireAbsent(t, content, "js_proto_bundle", "js_proto_bundle (JS disabled)")
-	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled)")
-	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled)")
+	// JavaScript must NOT be present (explicitly disabled in bundle.yaml).
+	// These are real deletions, not just non-generation: the seeded BUILD
+	// carried each of these rules in stale old form.
+	requireAbsent(t, content, "js_proto_bundle", "js_proto_bundle (JS disabled, stale rule deleted)")
+	requireAbsent(t, content, "es_proto_compile", "es_proto_compile (JS disabled, stale rule deleted)")
+	requireAbsent(t, content, "publish_common-types_to_npm", "npm publish (JS disabled, stale rule deleted)")
+	requireAbsent(t, content, "publish_to_npm", "npm publish alias (JS disabled, stale alias deleted)")
+	requireAbsent(t, content, "9.9.9", "stale seeded version literal fully gone")
 
-	// Publish rules — version baked from bundle.yaml (2.3.0).
+	// Publish rules — maven coordinates keep the gazelle-baked literal (2.3.0);
+	// everything else resolves the version from bundle.yaml at build/run time.
 	requireContains(t, content, "maven_publish", "maven_publish rule")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0"`,
 		"Maven coordinates baked from bundle.yaml")
-	requireContains(t, content, `--version=2.3.0`, "Version baked into py_binary args")
 	requireContains(t, content, "publish_common-types_to_maven", "maven publish target")
 	requireContains(t, content, "publish_common-types_to_pypi", "pypi publish target")
 	requireContains(t, content, `coordinates = "com.testcompany.proto:common-types-proto:2.3.0-local"`,
 		"local Maven coordinates carry the -local qualifier")
 
+	// Version-from-bundle.yaml wiring (PL-bstm).
+	requireContains(t, content, `bundle_yaml = ":bundle.yaml"`, "bundle_yaml attr on bundle rules")
+	requireContains(t, content, `--bundle-yaml $(location bundle.yaml)`,
+		"pom genrule cmd resolves version from bundle.yaml at build time")
+	requireContains(t, content, `srcs = ["bundle.yaml"]`, "pom genrule srcs carry bundle.yaml")
+	requireContains(t, content, `--expected-version 2.3.0 `,
+		"pom genrules bake the expected version as a stale-BUILD guard")
+	requireContains(t, content, `--bundle-yaml=$(location bundle.yaml)`,
+		"py_binary publishers resolve version from bundle.yaml at run time")
+	requireAbsent(t, content, `version = "`, "no baked version attr on bundle rules")
+
 	// Regression check for the version-stuck-at-1.0.0 bug: common-types is 2.3.0
 	// and must never appear with the 1.0.0 fallback.
-	requireAbsent(t, content, `--version=1.0.0`, "no 1.0.0 fallback for common-types (bundle.yaml says 2.3.0)")
+	requireAbsent(t, content, `--version=`, "no version literal in py_binary args")
 	requireAbsent(t, content, `:common-types-proto:1.0.0`, "no 1.0.0 maven coord for common-types")
 
 	// build_validation with only java and python
@@ -471,6 +851,45 @@ func verifyCommonBundle(t *testing.T, content string) {
 	// common-types doesn't import google/api, so no external deps should appear.
 	requireAbsent(t, content, "@googleapis//", "googleapis deps (not imported)")
 	requireAbsent(t, content, "api_java_proto", "Java umbrella dep (not imported)")
+}
+
+// verifyLegacyMigration checks the legacy-service bundle BUILD file. It was
+// seeded pre-PL-bstm shaped (baked version attrs, --version flags, no
+// bundle_yaml/srcs, stale 9.9.9 maven coordinates) and one gazelle run must
+// migrate it in place to the bundle.yaml-sourced shape (bundle.yaml says 3.1.4).
+func verifyLegacyMigration(t *testing.T, content string) {
+	// Bundle rules: baked version attrs deleted, bundle_yaml labels added.
+	requireAbsent(t, content, `version = "`, "baked version attrs deleted from bundle rules")
+	requireContains(t, content, `bundle_yaml = ":bundle.yaml"`, "bundle_yaml attr added to bundle rules")
+
+	// pom genrule: cmd rewritten from baked --version to --bundle-yaml +
+	// --expected-version, and the bundle.yaml src merged in.
+	requireAbsent(t, content, `--version 9.9.9`, "baked --version gone from pom cmd")
+	requireContains(t, content, `--bundle-yaml $(location bundle.yaml)`,
+		"pom cmd resolves version from bundle.yaml at build time")
+	requireContains(t, content, `--expected-version 3.1.4 `,
+		"pom cmd bakes the current bundle.yaml version as the stale-BUILD guard")
+	requireContains(t, content, `srcs = ["bundle.yaml"]`, "bundle.yaml src merged into pom genrule")
+
+	// The -local pom twin is generated fresh alongside, checking the RAW
+	// (pre-suffix) version.
+	requireContains(t, content, `--expected-version 3.1.4 --version-suffix=-local`,
+		"local pom twin checks the RAW (pre-suffix) version")
+	requireContains(t, content, "publish_legacy-service_to_maven_local", "maven local publish twin generated")
+
+	// py_binary publishers: baked --version= args replaced by --bundle-yaml=.
+	requireAbsent(t, content, `--version=`, "baked --version= gone from publisher args")
+	requireContains(t, content, `--bundle-yaml=$(location bundle.yaml)`,
+		"publishers resolve version from bundle.yaml at run time")
+
+	// maven_publish coordinates refreshed from bundle.yaml (release + -local twin).
+	requireContains(t, content, `coordinates = "com.testcompany.proto:legacy-service-proto:3.1.4"`,
+		"maven coordinates refreshed to the bundle.yaml version")
+	requireContains(t, content, `coordinates = "com.testcompany.proto:legacy-service-proto:3.1.4-local"`,
+		"local maven coordinates refreshed with the -local qualifier")
+
+	// Nothing anywhere in the migrated file may still reference the stale version.
+	requireAbsent(t, content, "9.9.9", "stale version literal fully gone")
 }
 
 // verifySubdirectoryTargets checks that proto files in subdirectories
