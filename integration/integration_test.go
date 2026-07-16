@@ -36,13 +36,23 @@ func TestGazelleIntegration(t *testing.T) {
 
 	// Fixed-point idempotency: a second gazelle pass over the same tree must
 	// change NOTHING — every BUILD file byte-identical, the legacy MIGRATION
-	// fixture included. Migrating an OLD-form BUILD used to be a two-pass
-	// convergence (the seeded `_all_protos` block appeared to relocate on
-	// pass 2): the discovery regex was re-matching the bundle's own generated
-	// `_all_protos` aggregate and wiring it into its own deps — a
-	// self-referential proto_library. Since discoverExistingProtoTargets skips
-	// the bundle's own aggregate, every bundle — fresh, cleaned, or migrated —
-	// reaches its fixed point on the first pass; this pins that.
+	// fixture included.
+	//
+	// History, for the record. Pre-fix, a protolake-pass-only regen over an
+	// already-generated tree re-discovered the bundle's own `_all_protos`
+	// aggregate and injected it into its own deps — a bazel dependency-cycle
+	// error if built. Fresh/cleaned bundles (user, common) corrupted on pass 2,
+	// which this byte-stability check catches; the legacy fixture, whose seeded
+	// BUILD already carried the aggregate, corrupted on pass 1 and was
+	// byte-STABLE in the corrupted state — that shape is guarded by the
+	// self-reference check in verifyLegacyMigration, not by stability alone.
+	// The lake service's real flow (a gazelle proto-language pass that deletes
+	// the srcs-less aggregate, then the protolake pass) masked the injection by
+	// removing the aggregate before discovery; that wrapper flow can still show
+	// a benign one-time aggregate relocation on its first run over a
+	// pre-steady-state tree. Post-fix (discovery skips the aggregate in the
+	// bundle dir only), the protolake pass in isolation — what this test runs —
+	// is single-pass byte-stable for every bundle shape.
 	pass1 := captureBuildFiles(t, testDir)
 	runGazelle(t, testDir)
 	pass2 := captureBuildFiles(t, testDir)
@@ -291,6 +301,32 @@ proto_library(
         "@googleapis//google/api:field_behavior_proto",
         "@googleapis//google/longrunning:operations_proto",
     ],
+    visibility = ["//visibility:public"],
+)
+`)
+
+	// extra/ holds a user-defined proto_library that deliberately shares the
+	// bundle's aggregate rule name. The aggregate skip in proto-target
+	// discovery must apply only to the bundle directory itself — this
+	// subdirectory target is a legitimate source target and silently dropping
+	// it would strip its protos from every published artifact.
+	userExtraDir := filepath.Join(userDir, "extra")
+	os.MkdirAll(userExtraDir, 0755)
+
+	writeFile(t, userExtraDir, "extra.proto", `syntax = "proto3";
+
+package com.testcompany.user.extra;
+
+message Extra {
+  string note = 1;
+}
+`)
+
+	writeFile(t, userExtraDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "user-service_all_protos",
+    srcs = ["extra.proto"],
     visibility = ["//visibility:public"],
 )
 `)
@@ -776,6 +812,13 @@ func verifyUserBundle(t *testing.T, content string) {
 	// Cross-bundle dependency: user.proto imports common.proto, so the
 	// generated gRPC rules should reference the common types target.
 	requireContains(t, content, "//com/testcompany/common/types/v1:", "cross-bundle proto target reference")
+
+	// A user-defined proto_library that shares the aggregate's rule name but
+	// lives in a SUBDIRECTORY is a legitimate source target: the aggregate
+	// skip applies only to the bundle directory itself, so this target must
+	// be discovered and wired into the bundle rules.
+	requireContains(t, content, `"//com/testcompany/user/extra:user-service_all_protos"`,
+		"same-named subdirectory proto_library discovered and wired in")
 
 	// Descriptor set is enabled for user-service: expect proto_descriptor_set rule
 	// and the java_proto_bundle wired to receive it via descriptor_pb/bundle_name.
