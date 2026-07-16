@@ -220,15 +220,15 @@ func MergeConfigurations(lakeConfig *LakeConfig, bundleConfig *BundleConfig) *Me
 
 // MergedConfig represents the final configuration after merging lake and bundle configs
 type MergedConfig struct {
-	BundleName           string
-	BundleOwner          string
-	ProtoPackage         string
-	Description          string
-	Version              string
+	BundleName            string
+	BundleOwner           string
+	ProtoPackage          string
+	Description           string
+	Version               string
 	GenerateDescriptorSet bool
-	JavaConfig           JavaConfig
-	PythonConfig         PythonConfig
-	JavaScriptConfig     JavaScriptConfig
+	JavaConfig            JavaConfig
+	PythonConfig          PythonConfig
+	JavaScriptConfig      JavaScriptConfig
 }
 
 type JavaConfig struct {
