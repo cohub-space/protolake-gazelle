@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,32 @@ func TestGazelleIntegration(t *testing.T) {
 	t.Run("LegacyMigration", func(t *testing.T) { verifyLegacyMigration(t, legacyContent) })
 	t.Run("SubdirectoryTargets", func(t *testing.T) {
 		verifySubdirectoryTargets(t, userContent, commonContent)
+	})
+
+	// Fixed-point idempotency: a second gazelle pass over the same tree must
+	// change NOTHING — every BUILD file byte-identical, the legacy MIGRATION
+	// fixture included.
+	//
+	// History, for the record. Pre-fix, a protolake-pass-only regen over an
+	// already-generated tree re-discovered the bundle's own `_all_protos`
+	// aggregate and injected it into its own deps — a bazel dependency-cycle
+	// error if built. Fresh/cleaned bundles (user, common) corrupted on pass 2,
+	// which this byte-stability check catches; the legacy fixture, whose seeded
+	// BUILD already carried the aggregate, corrupted on pass 1 and was
+	// byte-STABLE in the corrupted state — that shape is guarded by the
+	// self-reference check in verifyLegacyMigration, not by stability alone.
+	// The lake service's real flow (a gazelle proto-language pass that deletes
+	// the srcs-less aggregate, then the protolake pass) masked the injection by
+	// removing the aggregate before discovery; that wrapper flow can still show
+	// a benign one-time aggregate relocation on its first run over a
+	// pre-steady-state tree. Post-fix (discovery skips the aggregate in the
+	// bundle dir only), the protolake pass in isolation — what this test runs —
+	// is single-pass byte-stable for every bundle shape.
+	pass1 := captureBuildFiles(t, testDir)
+	runGazelle(t, testDir)
+	pass2 := captureBuildFiles(t, testDir)
+	t.Run("SecondPassIdempotency", func(t *testing.T) {
+		requireBuildFilesIdentical(t, pass1, pass2)
 	})
 }
 
@@ -274,6 +301,32 @@ proto_library(
         "@googleapis//google/api:field_behavior_proto",
         "@googleapis//google/longrunning:operations_proto",
     ],
+    visibility = ["//visibility:public"],
+)
+`)
+
+	// extra/ holds a user-defined proto_library that deliberately shares the
+	// bundle's aggregate rule name. The aggregate skip in proto-target
+	// discovery must apply only to the bundle directory itself — this
+	// subdirectory target is a legitimate source target and silently dropping
+	// it would strip its protos from every published artifact.
+	userExtraDir := filepath.Join(userDir, "extra")
+	os.MkdirAll(userExtraDir, 0755)
+
+	writeFile(t, userExtraDir, "extra.proto", `syntax = "proto3";
+
+package com.testcompany.user.extra;
+
+message Extra {
+  string note = 1;
+}
+`)
+
+	writeFile(t, userExtraDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "user-service_all_protos",
+    srcs = ["extra.proto"],
     visibility = ["//visibility:public"],
 )
 `)
@@ -760,6 +813,13 @@ func verifyUserBundle(t *testing.T, content string) {
 	// generated gRPC rules should reference the common types target.
 	requireContains(t, content, "//com/testcompany/common/types/v1:", "cross-bundle proto target reference")
 
+	// A user-defined proto_library that shares the aggregate's rule name but
+	// lives in a SUBDIRECTORY is a legitimate source target: the aggregate
+	// skip applies only to the bundle directory itself, so this target must
+	// be discovered and wired into the bundle rules.
+	requireContains(t, content, `"//com/testcompany/user/extra:user-service_all_protos"`,
+		"same-named subdirectory proto_library discovered and wired in")
+
 	// Descriptor set is enabled for user-service: expect proto_descriptor_set rule
 	// and the java_proto_bundle wired to receive it via descriptor_pb/bundle_name.
 	requireContains(t, content, "proto_descriptor_set(", "proto_descriptor_set rule")
@@ -890,6 +950,12 @@ func verifyLegacyMigration(t *testing.T, content string) {
 
 	// Nothing anywhere in the migrated file may still reference the stale version.
 	requireAbsent(t, content, "9.9.9", "stale version literal fully gone")
+
+	// The seeded `_all_protos` aggregate must not be re-discovered as a proto
+	// target of its own bundle: that wired the aggregate into its own deps (a
+	// self-referential proto_library) and into the grpc/es rules' protos.
+	requireAbsent(t, content, "//com/testcompany/legacy:legacy-service_all_protos",
+		"bundle's own aggregate self-referenced as a proto target")
 }
 
 // verifySubdirectoryTargets checks that proto files in subdirectories
@@ -905,6 +971,58 @@ func verifySubdirectoryTargets(t *testing.T, userContent, commonContent string) 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+const buildBazelName = "BUILD.bazel"
+
+// captureBuildFiles walks root and returns every BUILD.bazel's contents,
+// keyed by slash-separated path relative to root.
+func captureBuildFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != buildBazelName {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = string(content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to capture BUILD files under %s: %v", root, err)
+	}
+	return files
+}
+
+// requireBuildFilesIdentical asserts that before and after hold the same
+// BUILD file set with byte-identical contents.
+func requireBuildFilesIdentical(t *testing.T, before, after map[string]string) {
+	t.Helper()
+	for rel, prev := range before {
+		cur, ok := after[rel]
+		if !ok {
+			t.Errorf("BUILD file disappeared between passes: %s", rel)
+			continue
+		}
+		if cur != prev {
+			t.Errorf("BUILD file not byte-identical between passes: %s\n--- earlier pass ---\n%s\n--- later pass ---\n%s", rel, prev, cur)
+		}
+	}
+	for rel := range after {
+		if _, ok := before[rel]; !ok {
+			t.Errorf("BUILD file appeared between passes: %s", rel)
+		}
+	}
+}
 
 func requireContains(t *testing.T, content, pattern, description string) {
 	t.Helper()
