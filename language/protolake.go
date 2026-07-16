@@ -143,7 +143,7 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 	log.Printf("Processing bundle: %s at %s", mergedConfig.BundleName, args.Rel)
 
 	// Discover existing proto targets from BUILD files (including subdirectories)
-	protoTargets := pe.discoverExistingProtoTargets(args)
+	protoTargets := pe.discoverExistingProtoTargets(args, mergedConfig.BundleName)
 	if len(protoTargets) == 0 {
 		log.Printf("No proto targets found for bundle %s", mergedConfig.BundleName)
 		return language.GenerateResult{}
@@ -181,23 +181,28 @@ func (pe *protolakeExtension) GenerateRules(args language.GenerateArgs) language
 }
 
 // discoverExistingProtoTargets finds proto_library targets in the current directory and subdirectories
-// This enhanced version searches recursively to support bundles with protos in subdirectories
-func (pe *protolakeExtension) discoverExistingProtoTargets(args language.GenerateArgs) []string {
+// This enhanced version searches recursively to support bundles with protos in subdirectories.
+// The bundle's own aggregated rule (<bundle>_all_protos) is excluded: it is an output of this
+// extension, regenerated every pass — discovering it as a source target would wire the aggregate
+// into its own deps (a self-referential proto_library) on any run over an already-generated tree.
+func (pe *protolakeExtension) discoverExistingProtoTargets(args language.GenerateArgs, bundleName string) []string {
 	var targets []string
+	aggregateRuleName := bundleName + "_all_protos"
 
 	// First, check for protos in the current directory (bundle.yaml directory)
-	targets = append(targets, pe.discoverProtoTargetsInDirectory(args.Dir, args.Config.RepoRoot)...)
+	targets = append(targets, pe.discoverProtoTargetsInDirectory(args.Dir, args.Config.RepoRoot, aggregateRuleName)...)
 
 	// Then recursively search subdirectories for additional proto targets
-	subdirTargets := pe.discoverProtoTargetsRecursively(args.Dir, args.Config.RepoRoot)
+	subdirTargets := pe.discoverProtoTargetsRecursively(args.Dir, args.Config.RepoRoot, aggregateRuleName)
 	targets = append(targets, subdirTargets...)
 
 	log.Printf("Discovered %d total proto targets for bundle: %v", len(targets), targets)
 	return targets
 }
 
-// discoverProtoTargetsInDirectory finds proto_library targets in a specific directory
-func (pe *protolakeExtension) discoverProtoTargetsInDirectory(dir string, repoRoot string) []string {
+// discoverProtoTargetsInDirectory finds proto_library targets in a specific directory,
+// skipping any rule named skipRuleName (the bundle's own generated aggregate).
+func (pe *protolakeExtension) discoverProtoTargetsInDirectory(dir string, repoRoot string, skipRuleName string) []string {
 	var targets []string
 
 	// Look for existing BUILD file
@@ -227,6 +232,10 @@ func (pe *protolakeExtension) discoverProtoTargetsInDirectory(dir string, repoRo
 		if len(match) > 1 {
 			name := match[1]
 
+			if name == skipRuleName {
+				continue
+			}
+
 			// Determine the correct target format based on directory relationship
 			pkg, err := filepath.Rel(repoRoot, dir)
 			if err != nil || pkg == "." {
@@ -245,8 +254,9 @@ func (pe *protolakeExtension) discoverProtoTargetsInDirectory(dir string, repoRo
 	return targets
 }
 
-// discoverProtoTargetsRecursively finds proto_library targets in all subdirectories
-func (pe *protolakeExtension) discoverProtoTargetsRecursively(bundleDir string, repoRoot string) []string {
+// discoverProtoTargetsRecursively finds proto_library targets in all subdirectories,
+// skipping any rule named skipRuleName (the bundle's own generated aggregate).
+func (pe *protolakeExtension) discoverProtoTargetsRecursively(bundleDir string, repoRoot string, skipRuleName string) []string {
 	var targets []string
 
 	// Walk through all subdirectories
@@ -268,7 +278,7 @@ func (pe *protolakeExtension) discoverProtoTargetsRecursively(bundleDir string, 
 		// Process BUILD files
 		if info.Name() == buildBazelFile || info.Name() == buildFile {
 			dir := filepath.Dir(path)
-			dirTargets := pe.discoverProtoTargetsInDirectory(dir, repoRoot)
+			dirTargets := pe.discoverProtoTargetsInDirectory(dir, repoRoot, skipRuleName)
 			targets = append(targets, dirTargets...)
 		}
 

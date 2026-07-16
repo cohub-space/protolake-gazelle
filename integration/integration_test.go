@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,22 @@ func TestGazelleIntegration(t *testing.T) {
 	t.Run("LegacyMigration", func(t *testing.T) { verifyLegacyMigration(t, legacyContent) })
 	t.Run("SubdirectoryTargets", func(t *testing.T) {
 		verifySubdirectoryTargets(t, userContent, commonContent)
+	})
+
+	// Fixed-point idempotency: a second gazelle pass over the same tree must
+	// change NOTHING — every BUILD file byte-identical, the legacy MIGRATION
+	// fixture included. Migrating an OLD-form BUILD used to be a two-pass
+	// convergence (the seeded `_all_protos` block appeared to relocate on
+	// pass 2): the discovery regex was re-matching the bundle's own generated
+	// `_all_protos` aggregate and wiring it into its own deps — a
+	// self-referential proto_library. Since discoverExistingProtoTargets skips
+	// the bundle's own aggregate, every bundle — fresh, cleaned, or migrated —
+	// reaches its fixed point on the first pass; this pins that.
+	pass1 := captureBuildFiles(t, testDir)
+	runGazelle(t, testDir)
+	pass2 := captureBuildFiles(t, testDir)
+	t.Run("SecondPassIdempotency", func(t *testing.T) {
+		requireBuildFilesIdentical(t, pass1, pass2)
 	})
 }
 
@@ -890,6 +907,12 @@ func verifyLegacyMigration(t *testing.T, content string) {
 
 	// Nothing anywhere in the migrated file may still reference the stale version.
 	requireAbsent(t, content, "9.9.9", "stale version literal fully gone")
+
+	// The seeded `_all_protos` aggregate must not be re-discovered as a proto
+	// target of its own bundle: that wired the aggregate into its own deps (a
+	// self-referential proto_library) and into the grpc/es rules' protos.
+	requireAbsent(t, content, "//com/testcompany/legacy:legacy-service_all_protos",
+		"bundle's own aggregate self-referenced as a proto target")
 }
 
 // verifySubdirectoryTargets checks that proto files in subdirectories
@@ -905,6 +928,58 @@ func verifySubdirectoryTargets(t *testing.T, userContent, commonContent string) 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+const buildBazelName = "BUILD.bazel"
+
+// captureBuildFiles walks root and returns every BUILD.bazel's contents,
+// keyed by slash-separated path relative to root.
+func captureBuildFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != buildBazelName {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = string(content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to capture BUILD files under %s: %v", root, err)
+	}
+	return files
+}
+
+// requireBuildFilesIdentical asserts that before and after hold the same
+// BUILD file set with byte-identical contents.
+func requireBuildFilesIdentical(t *testing.T, before, after map[string]string) {
+	t.Helper()
+	for rel, prev := range before {
+		cur, ok := after[rel]
+		if !ok {
+			t.Errorf("BUILD file disappeared between passes: %s", rel)
+			continue
+		}
+		if cur != prev {
+			t.Errorf("BUILD file not byte-identical between passes: %s\n--- earlier pass ---\n%s\n--- later pass ---\n%s", rel, prev, cur)
+		}
+	}
+	for rel := range after {
+		if _, ok := before[rel]; !ok {
+			t.Errorf("BUILD file appeared between passes: %s", rel)
+		}
+	}
+}
 
 func requireContains(t *testing.T, content, pattern, description string) {
 	t.Helper()
