@@ -988,6 +988,7 @@ func verifyCommonBundle(t *testing.T, content string) {
 	// common-types doesn't import google/api, so no external deps should appear.
 	requireAbsent(t, content, "@googleapis//", "googleapis deps (not imported)")
 	requireAbsent(t, content, "api_java_proto", "Java umbrella dep (not imported)")
+	requireAbsent(t, content, "--maven-dep", "POM external gencode flags (not imported)")
 }
 
 // verifyLegacyMigration checks the legacy-service bundle BUILD file. It was
