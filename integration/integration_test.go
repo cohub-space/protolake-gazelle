@@ -137,6 +137,83 @@ proto_library(
 	runGazelleExpectFatal(t, testDir, "leaves package_name empty")
 }
 
+// TestGazellePomDeclaresExternalGencodeDeps: a bundle whose protos import
+// buf/validate and google/api must get --maven-dep flags in BOTH pom genrule
+// cmds. The thin bundle JAR compiles against umbrella targets but does not
+// package their classes, so its generated descriptor code references them at
+// consumer class-load time — a POM that omits them breaks every consumer
+// boot with NoClassDefFoundError (cohub-authz-proto 2.2.0 / authzaas#128).
+func TestGazellePomDeclaresExternalGencodeDeps(t *testing.T) {
+	testDir := t.TempDir()
+
+	writeFile(t, testDir, "MODULE.bazel", `module(name = "test_workspace", version = "0.0.1")
+`)
+	writeFile(t, testDir, "BUILD.bazel", "")
+	writeFile(t, testDir, "lake.yaml", `config:
+  language_defaults:
+    java:
+      enabled: true
+      group_id: "com.testcompany.proto"
+    python:
+      enabled: false
+    javascript:
+      enabled: false
+`)
+
+	bundleDir := filepath.Join(testDir, "com", "testcompany", "validated")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("Failed to create bundle dir: %v", err)
+	}
+	writeFile(t, bundleDir, "bundle.yaml", `name: "validated-service"
+display_name: "Validated Service"
+version: "1.0.0"
+config:
+  languages:
+    java:
+      enabled: true
+      artifact_id: "validated-service-proto"
+`)
+	writeFile(t, bundleDir, "validated.proto", `syntax = "proto3";
+
+package com.testcompany.validated;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+
+message Validated {
+  string id = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string.min_len = 1
+  ];
+}
+`)
+	// Seeded proto_library: GenerateRules returns early when a bundle has no
+	// proto targets (same reason as the half-configured fixture above).
+	writeFile(t, bundleDir, "BUILD.bazel", `load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "validated_proto",
+    srcs = ["validated.proto"],
+    visibility = ["//visibility:public"],
+)
+`)
+
+	runGazelle(t, testDir)
+	content := readBuildFile(t, bundleDir)
+
+	protovalidateDep := "--maven-dep build.buf:protovalidate:$${PROTOVALIDATE_MAVEN_VERSION:-1.2.2}"
+	commonProtosDep := "--maven-dep com.google.api.grpc:proto-google-common-protos:$${GOOGLE_COMMON_PROTOS_VERSION:-2.75.0}"
+	requireContains(t, content, protovalidateDep, "protovalidate maven dep in pom cmd")
+	requireContains(t, content, commonProtosDep, "proto-google-common-protos maven dep in pom cmd")
+	// Release pom and the -local twin must both declare them.
+	if got := strings.Count(content, protovalidateDep); got != 2 {
+		t.Errorf("protovalidate --maven-dep should appear in both pom cmds, found %d", got)
+	}
+	if got := strings.Count(content, commonProtosDep); got != 2 {
+		t.Errorf("proto-google-common-protos --maven-dep should appear in both pom cmds, found %d", got)
+	}
+}
+
 // readBuildFile reads a BUILD.bazel or BUILD file from the given directory.
 func readBuildFile(t *testing.T, dir string) string {
 	t.Helper()
@@ -911,6 +988,7 @@ func verifyCommonBundle(t *testing.T, content string) {
 	// common-types doesn't import google/api, so no external deps should appear.
 	requireAbsent(t, content, "@googleapis//", "googleapis deps (not imported)")
 	requireAbsent(t, content, "api_java_proto", "Java umbrella dep (not imported)")
+	requireAbsent(t, content, "--maven-dep", "POM external gencode flags (not imported)")
 }
 
 // verifyLegacyMigration checks the legacy-service bundle BUILD file. It was
