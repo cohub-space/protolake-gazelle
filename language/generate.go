@@ -66,7 +66,7 @@ func generateBundleRules(config *MergedConfig, protoTargets []string, rel string
 		requireCoordinates(bundleName, rel, "java",
 			[2]string{"group_id", config.JavaConfig.GroupId},
 			[2]string{"artifact_id", config.JavaConfig.ArtifactId})
-		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalDeps.Java)...)
+		rules = append(rules, generateJavaBundleRules(config, bundleName, allProtoTargets, externalDeps.Java, externalDeps.JavaMavenDeps)...)
 	} else {
 		log.Printf("Skipping Java bundle generation for %s (disabled)", bundleName)
 	}
@@ -159,8 +159,18 @@ func requireCoordinates(bundleName, rel, language string, fields ...[2]string) {
 // BUILD time: the bundle rule reads it via the `bundle_yaml` attr and the pom
 // genrule via `--bundle-yaml`. The maven_publish `coordinates` string is the one
 // intentional analysis-time version literal — see the comment on that rule.
-func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string, externalJavaDeps []string) []*rule.Rule {
+func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTargets []string, externalJavaDeps []string, javaMavenDeps []string) []*rule.Rule {
 	var rules []*rule.Rule
+
+	// Extra runtime deps for the published POM (see ExternalProtoDeps
+	// .JavaMavenDeps). Rendered into BOTH pom genrule cmds below so the
+	// release and -local twins declare identical dependency sets.
+	var mavenDepFlags strings.Builder
+	for _, coord := range javaMavenDeps {
+		mavenDepFlags.WriteString("--maven-dep ")
+		mavenDepFlags.WriteString(coord)
+		mavenDepFlags.WriteString(" ")
+	}
 
 	// Java gRPC library (includes both proto messages and gRPC stubs)
 	javaGrpcRule := rule.NewRule("java_grpc_library", fmt.Sprintf("%s_java_grpc", bundleName))
@@ -220,8 +230,10 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 			"--expected-version %s "+
 			"--protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} "+
 			"--grpc-version $${GRPC_VERSION:-1.78.0} "+
+			"%s"+
 			"--out $@",
-		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version)
+		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version,
+		mavenDepFlags.String())
 	pomRule.SetAttr("cmd", pomCmd)
 	pomRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pom_generator"}})
 	pomRule.SetAttr("visibility", []string{"//visibility:public"})
@@ -281,8 +293,10 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 			"--version-suffix=-local "+
 			"--protobuf-version $${PROTOBUF_JAVA_VERSION:-4.33.5} "+
 			"--grpc-version $${GRPC_VERSION:-1.78.0} "+
+			"%s"+
 			"--out $@",
-		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version)
+		config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version,
+		mavenDepFlags.String())
 	pomLocalRule.SetAttr("cmd", pomLocalCmd)
 	pomLocalRule.SetAttr("tools", rule.PlatformStrings{Generic: []string{"//tools:pom_generator"}})
 	pomLocalRule.SetAttr("visibility", []string{"//visibility:public"})
@@ -601,6 +615,15 @@ type ExternalProtoDeps struct {
 	Java []string
 	// Raw proto_library targets, used by Python and JS which recompile per-bundle.
 	ProtoLibraries []string
+	// Maven coordinates the published POM must declare: the Java umbrella
+	// classes above are compile-time only — the thin bundle JAR does not
+	// package them, so its generated descriptor code references them at
+	// consumer class-load time (e.g. build.buf.validate.ValidateProto when a
+	// proto carries buf.validate options). Python/JS need no equivalent —
+	// they recompile the external protos into the published artifact.
+	// Entries are groupId:artifactId:version; versions use the genrule's
+	// $${VAR:-default} shell-fallback idiom, matching --protobuf-version.
+	JavaMavenDeps []string
 }
 
 // googleapisJsProtos is the set of google/api protos our consumers transitively need
@@ -665,6 +688,18 @@ func detectExternalProtoImports(bundleDir string) ExternalProtoDeps {
 		// Raw proto_library lives under the module's proto/ subtree — see the lake's
 		// `protovalidate_java_proto` target for the canonical path.
 		out.ProtoLibraries = append(out.ProtoLibraries, "@protovalidate//proto/protovalidate/buf/validate:validate_proto")
+	}
+
+	// POM runtime deps mirroring the Java umbrella targets: google/api and
+	// google/longrunning gencode classes ship in proto-google-common-protos,
+	// buf/validate gencode in protovalidate (Maven Central artifacts).
+	if needsGoogleapis || needsLongrunning {
+		out.JavaMavenDeps = append(out.JavaMavenDeps,
+			"com.google.api.grpc:proto-google-common-protos:$${GOOGLE_COMMON_PROTOS_VERSION:-2.75.0}")
+	}
+	if needsProtovalidate {
+		out.JavaMavenDeps = append(out.JavaMavenDeps,
+			"build.buf:protovalidate:$${PROTOVALIDATE_MAVEN_VERSION:-1.2.2}")
 	}
 	return out
 }
