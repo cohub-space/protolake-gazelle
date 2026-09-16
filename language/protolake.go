@@ -457,6 +457,7 @@ func (pe *protolakeExtension) KindInfo() map[string]rule.KindInfo {
 				"pom":         true,
 				"artifact":    true,
 				"visibility":  true,
+				"publish_maven_metadata": true,
 			},
 		},
 		"py_binary": {

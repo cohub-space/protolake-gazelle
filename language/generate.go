@@ -258,6 +258,12 @@ func generateJavaBundleRules(config *MergedConfig, bundleName string, allProtoTa
 		fmt.Sprintf("%s:%s:%s", config.JavaConfig.GroupId, config.JavaConfig.ArtifactId, version))
 	publishMavenRule.SetAttr("pom", fmt.Sprintf(":%s_pom", bundleName))
 	publishMavenRule.SetAttr("artifact", fmt.Sprintf(":%s_java_bundle", bundleName))
+	// The publisher maintains the registry's maven-metadata.xml (download,
+	// add the version, set latest/release, upload) only when asked; without
+	// it Artifact Registry keeps whatever metadata it last received and
+	// version ranges and Renovate read a stale <release>. The -local twin
+	// publishes to a file repository and stays without it.
+	publishMavenRule.SetAttr("publish_maven_metadata", true)
 	publishMavenRule.SetAttr("visibility", []string{"//visibility:public"})
 	rules = append(rules, publishMavenRule)
 

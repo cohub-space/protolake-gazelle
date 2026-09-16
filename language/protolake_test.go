@@ -1,6 +1,7 @@
 package language
 
 import (
+	"strings"
 	"github.com/bazelbuild/bazel-gazelle/config"
 	"github.com/bazelbuild/bazel-gazelle/label"
 	"github.com/bazelbuild/bazel-gazelle/rule"
@@ -935,4 +936,41 @@ func TestEmptyInterfaceMethods(t *testing.T) {
 	if err != nil {
 		t.Errorf("CheckFlags should return nil, got %v", err)
 	}
+}
+
+// The release maven_publish asks the publisher to maintain the registry's
+// maven-metadata.xml; the -local twin (a file repository) does not.
+func TestJavaReleasePublishMaintainsMavenMetadata(t *testing.T) {
+	config := &MergedConfig{
+		BundleName: "demo",
+		JavaConfig: JavaConfig{Enabled: true, GroupId: "g", ArtifactId: "a"},
+	}
+	rules := generateJavaBundleRules(config, "demo", nil, nil, nil)
+	byName := map[string]*rule.Rule{}
+	for _, r := range rules {
+		byName[r.Name()] = r
+	}
+	release, ok := byName["publish_demo_to_maven"]
+	if !ok {
+		t.Fatal("publish_demo_to_maven not generated")
+	}
+	// A bool attr is a Starlark literal, not a string: format the rule and
+	// read the line, so the assertion proves True rather than mere presence.
+	if got := formatRule(release); !strings.Contains(got, "publish_maven_metadata = True,") {
+		t.Errorf("publish_demo_to_maven must set publish_maven_metadata = True, got:\n%s", got)
+	}
+	local, ok := byName["publish_demo_to_maven_local"]
+	if !ok {
+		t.Fatal("publish_demo_to_maven_local not generated")
+	}
+	if got := formatRule(local); strings.Contains(got, "publish_maven_metadata") {
+		t.Errorf("the -local twin publishes to a file repository and must not set publish_maven_metadata, got:\n%s", got)
+	}
+}
+
+// formatRule renders one rule the way gazelle writes it into a BUILD file.
+func formatRule(r *rule.Rule) string {
+	f := rule.EmptyFile("BUILD.bazel", "")
+	r.Insert(f)
+	return string(f.Format())
 }
